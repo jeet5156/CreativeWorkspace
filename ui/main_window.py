@@ -1,13 +1,15 @@
 from PySide6.QtWidgets import (
     QMainWindow,
-    QWidget,
-    QLabel,
-    QHBoxLayout,
+    QSplitter,
     QStatusBar,
-    QToolBar
+    QToolBar,
 )
-
+from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
+
+from ui.explorer import Explorer
+from ui.dashboard import Dashboard
+from ui.property_panel import PropertyPanel
 
 
 class MainWindow(QMainWindow):
@@ -18,38 +20,42 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Creative Workspace")
         self.resize(1600, 900)
 
-        self.setup_ui()
+        self.create_menu()
+        self.create_toolbar()
+        self.create_central_widget()
+        self.create_statusbar()
 
-    def setup_ui(self):
+    def create_menu(self):
+        menubar = self.menuBar()
 
-        # ---------- Toolbar ----------
+        menubar.addMenu("&File")
+        menubar.addMenu("&Edit")
+        menubar.addMenu("&View")
+        menubar.addMenu("&Tools")
+        menubar.addMenu("&Help")
+
+    def create_toolbar(self):
         toolbar = QToolBar("Main Toolbar")
         self.addToolBar(toolbar)
 
-        # ---------- Central Widget ----------
-        central = QWidget()
-        self.setCentralWidget(central)
+        toolbar.addAction(QAction("New", self))
+        toolbar.addAction(QAction("Open", self))
+        toolbar.addAction(QAction("Save", self))
 
-        layout = QHBoxLayout()
-        central.setLayout(layout)
+    def create_central_widget(self):
+        splitter = QSplitter(Qt.Horizontal)
 
-        # ---------- Explorer ----------
-        explorer = QLabel("Explorer")
-        explorer.setAlignment(Qt.AlignCenter)
+        splitter.addWidget(Explorer())
+        splitter.addWidget(Dashboard())
+        splitter.addWidget(PropertyPanel())
 
-        # ---------- Workspace ----------
-        workspace = QLabel("Workspace")
-        workspace.setAlignment(Qt.AlignCenter)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 4)
+        splitter.setStretchFactor(2, 1)
 
-        # ---------- Properties ----------
-        properties = QLabel("Properties")
-        properties.setAlignment(Qt.AlignCenter)
+        self.setCentralWidget(splitter)
 
-        layout.addWidget(explorer, 1)
-        layout.addWidget(workspace, 3)
-        layout.addWidget(properties, 1)
-
-        # ---------- Status Bar ----------
+    def create_statusbar(self):
         status = QStatusBar()
         status.showMessage("Ready")
         self.setStatusBar(status)
