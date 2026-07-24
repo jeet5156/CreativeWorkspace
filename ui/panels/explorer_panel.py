@@ -24,25 +24,35 @@ class ExplorerPanel(QWidget):
 
         layout.addWidget(self.tree)
 
-        self.projects_root = QTreeWidgetItem(["Projects"])
+        self.projects_root = QTreeWidgetItem(["📁 Projects"])
         self.tree.addTopLevelItem(self.projects_root)
 
-        self.tree.itemClicked.connect(self.on_item_clicked)
-        print("Explorer initialized")
         self.projects_root.setExpanded(True)
+
+        self.tree.itemClicked.connect(self.on_item_clicked)
 
     def add_project(self, project: Project):
 
-        item = QTreeWidgetItem([project.name])
+        project_item = QTreeWidgetItem([f"📁 {project.name}"])
+        project_item.setData(0, Qt.UserRole, project)
 
-        item.setData(0, Qt.UserRole, project)
+        self.projects_root.addChild(project_item)
 
-        self.projects_root.addChild(item)
+        folders = [
+            "📝 Notes",
+            "🖼 References",
+            "📦 Assets",
+            "🎬 Renders",
+            "📤 Exports",
+        ]
 
-        self.projects_root.setExpanded(True)
+        for folder in folders:
+            child = QTreeWidgetItem([folder])
+            project_item.addChild(child)
+
+        project_item.setExpanded(True)
 
     def clear_projects(self):
-
         self.projects_root.takeChildren()
 
     def load_projects(self, projects: list[Project]):
@@ -51,6 +61,8 @@ class ExplorerPanel(QWidget):
 
         for project in projects:
             self.add_project(project)
+
+        self.projects_root.setExpanded(True)
 
     def on_item_clicked(self, item, column):
 

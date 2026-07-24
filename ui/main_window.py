@@ -1,8 +1,12 @@
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QMainWindow,
     QSplitter,
     QStatusBar,
     QToolBar,
+    QFileDialog,
+    QMessageBox,
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
@@ -41,6 +45,10 @@ class MainWindow(QMainWindow):
         self.new_project_action.triggered.connect(self.new_project)
         file_menu.addAction(self.new_project_action)
 
+        self.open_project_action = QAction("Open Project...", self)
+        self.open_project_action.triggered.connect(self.open_project)
+        file_menu.addAction(self.open_project_action)
+
         file_menu.addSeparator()
 
         exit_action = QAction("Exit", self)
@@ -66,8 +74,9 @@ class MainWindow(QMainWindow):
         self.explorer = ExplorerPanel()
         self.dashboard = DashboardPanel()
         self.inspector = InspectorPanel()
+
         self.explorer.project_selected.connect(
-        self.project_selected
+            self.project_selected
         )
 
         splitter.addWidget(self.explorer)
@@ -100,14 +109,14 @@ class MainWindow(QMainWindow):
         self.explorer.load_projects(
             self.context.project_service.all_projects()
         )
+
     def project_selected(self, project):
 
         self.context.set_current_project(project)
-
         self.dashboard.show_project(project)
 
         print(f"Selected: {project.name}")
-    
+
     def new_project(self):
 
         dialog = NewProjectDialog(self)
@@ -132,5 +141,48 @@ class MainWindow(QMainWindow):
 
         self.status.showMessage(
             f"Project '{project.name}' created successfully.",
+            5000,
+        )
+
+    def open_project(self):
+
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Open Project",
+        )
+
+        if not folder:
+            return
+
+        if not (Path(folder) / "project.json").exists():
+            QMessageBox.warning(
+                self,
+                "Invalid Project",
+                "Selected folder does not contain a project.json file.",
+            )
+            return
+
+        project = self.context.project_service.load_project(folder)
+
+        if project is None:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "Unable to load project.",
+            )
+            return
+
+        self.context.settings_service.add_recent_project(
+            project.location
+        )
+
+        self.explorer.load_projects(
+            self.context.project_service.all_projects()
+        )
+
+        self.project_selected(project)
+
+        self.status.showMessage(
+            f"Opened project '{project.name}'.",
             5000,
         )
