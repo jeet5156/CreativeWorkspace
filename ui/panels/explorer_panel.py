@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
 )
 
 
-class Explorer(QWidget):
+class ExplorerPanel(QWidget):
     def __init__(self):
         super().__init__()
 

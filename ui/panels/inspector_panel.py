@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 
-class PropertyPanel(QWidget):
+class InspectorPanel(QWidget):
     def __init__(self):
         super().__init__()
 

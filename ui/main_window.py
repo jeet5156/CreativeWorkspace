@@ -7,9 +7,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 
-from ui.explorer import Explorer
-from ui.dashboard import Dashboard
-from ui.property_panel import PropertyPanel
+from ui.dialogs.new_project_dialog import NewProjectDialog
+from ui.panels.explorer_panel import ExplorerPanel
+from ui.panels.dashboard_panel import DashboardPanel
+from ui.panels.inspector_panel import InspectorPanel
 
 
 class MainWindow(QMainWindow):
@@ -28,7 +29,19 @@ class MainWindow(QMainWindow):
     def create_menu(self):
         menubar = self.menuBar()
 
-        menubar.addMenu("&File")
+        file_menu = menubar.addMenu("&File")
+
+        self.new_project_action = QAction("New Project", self)
+        file_menu.addAction(self.new_project_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("Exit", self)
+        file_menu.addAction(exit_action)
+
+        self.new_project_action.triggered.connect(self.new_project)
+        exit_action.triggered.connect(self.close)
+
         menubar.addMenu("&Edit")
         menubar.addMenu("&View")
         menubar.addMenu("&Tools")
@@ -45,9 +58,9 @@ class MainWindow(QMainWindow):
     def create_central_widget(self):
         splitter = QSplitter(Qt.Horizontal)
 
-        splitter.addWidget(Explorer())
-        splitter.addWidget(Dashboard())
-        splitter.addWidget(PropertyPanel())
+        splitter.addWidget(ExplorerPanel())
+        splitter.addWidget(DashboardPanel())
+        splitter.addWidget(InspectorPanel())
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
@@ -59,3 +72,12 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         status.showMessage("Ready")
         self.setStatusBar(status)
+
+    def new_project(self):
+        dialog = NewProjectDialog(self)
+
+        if dialog.exec():
+            print("Project Name :", dialog.name_edit.text())
+            print("Project Type :", dialog.type_combo.currentText())
+            print("Location     :", dialog.location_edit.text())
+            print("Description  :", dialog.description_edit.toPlainText())
