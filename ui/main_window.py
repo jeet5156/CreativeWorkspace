@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 
+from core.app_context import AppContext
+
 from ui.dialogs.new_project_dialog import NewProjectDialog
 from ui.panels.explorer_panel import ExplorerPanel
 from ui.panels.dashboard_panel import DashboardPanel
@@ -18,6 +20,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.context = AppContext()
+
         self.setWindowTitle("Creative Workspace")
         self.resize(1600, 900)
 
@@ -26,21 +30,22 @@ class MainWindow(QMainWindow):
         self.create_central_widget()
         self.create_statusbar()
 
+        self.load_recent_projects()
+
     def create_menu(self):
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("&File")
 
         self.new_project_action = QAction("New Project", self)
+        self.new_project_action.triggered.connect(self.new_project)
         file_menu.addAction(self.new_project_action)
 
         file_menu.addSeparator()
 
         exit_action = QAction("Exit", self)
-        file_menu.addAction(exit_action)
-
-        self.new_project_action.triggered.connect(self.new_project)
         exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
 
         menubar.addMenu("&Edit")
         menubar.addMenu("&View")
@@ -58,9 +63,16 @@ class MainWindow(QMainWindow):
     def create_central_widget(self):
         splitter = QSplitter(Qt.Horizontal)
 
-        splitter.addWidget(ExplorerPanel())
-        splitter.addWidget(DashboardPanel())
-        splitter.addWidget(InspectorPanel())
+        self.explorer = ExplorerPanel()
+        self.dashboard = DashboardPanel()
+        self.inspector = InspectorPanel()
+        self.explorer.project_selected.connect(
+        self.project_selected
+        )
+
+        splitter.addWidget(self.explorer)
+        splitter.addWidget(self.dashboard)
+        splitter.addWidget(self.inspector)
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
@@ -69,15 +81,56 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
     def create_statusbar(self):
-        status = QStatusBar()
-        status.showMessage("Ready")
-        self.setStatusBar(status)
+        self.status = QStatusBar()
+        self.status.showMessage("Ready")
+        self.setStatusBar(self.status)
 
+    def load_recent_projects(self):
+
+        self.context.project_service.clear()
+
+        recent = self.context.settings_service.recent_projects()
+
+        for project_path in recent:
+            project = self.context.project_service.load_project(project_path)
+
+            if project is None:
+                self.context.settings_service.remove_recent_project(project_path)
+
+        self.explorer.load_projects(
+            self.context.project_service.all_projects()
+        )
+    def project_selected(self, project):
+
+        self.context.set_current_project(project)
+
+        self.dashboard.show_project(project)
+
+        print(f"Selected: {project.name}")
+    
     def new_project(self):
+
         dialog = NewProjectDialog(self)
 
-        if dialog.exec():
-            print("Project Name :", dialog.name_edit.text())
-            print("Project Type :", dialog.type_combo.currentText())
-            print("Location     :", dialog.location_edit.text())
-            print("Description  :", dialog.description_edit.toPlainText())
+        if not dialog.exec():
+            return
+
+        project = self.context.project_service.create_project(
+            dialog.name_edit.text(),
+            dialog.type_combo.currentText(),
+            dialog.location_edit.text(),
+            dialog.description_edit.toPlainText(),
+        )
+
+        self.context.settings_service.add_recent_project(
+            project.location
+        )
+
+        self.explorer.load_projects(
+            self.context.project_service.all_projects()
+        )
+
+        self.status.showMessage(
+            f"Project '{project.name}' created successfully.",
+            5000,
+        )

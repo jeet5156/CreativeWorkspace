@@ -1,12 +1,19 @@
+from PySide6.QtCore import Qt, Signal
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QTreeWidget,
-    QTreeWidgetItem
+    QTreeWidgetItem,
 )
+
+from models.project import Project
 
 
 class ExplorerPanel(QWidget):
+
+    project_selected = Signal(Project)
+
     def __init__(self):
         super().__init__()
 
@@ -17,19 +24,37 @@ class ExplorerPanel(QWidget):
 
         layout.addWidget(self.tree)
 
-        self.populate()
+        self.projects_root = QTreeWidgetItem(["Projects"])
+        self.tree.addTopLevelItem(self.projects_root)
 
-    def populate(self):
-        projects = QTreeWidgetItem(["Projects"])
-        ideas = QTreeWidgetItem(["Ideas"])
-        clients = QTreeWidgetItem(["Clients"])
-        assets = QTreeWidgetItem(["Assets"])
-        learning = QTreeWidgetItem(["Learning"])
+        self.tree.itemClicked.connect(self.on_item_clicked)
+        print("Explorer initialized")
+        self.projects_root.setExpanded(True)
 
-        self.tree.addTopLevelItem(projects)
-        self.tree.addTopLevelItem(ideas)
-        self.tree.addTopLevelItem(clients)
-        self.tree.addTopLevelItem(assets)
-        self.tree.addTopLevelItem(learning)
+    def add_project(self, project: Project):
 
-        self.tree.expandAll()
+        item = QTreeWidgetItem([project.name])
+
+        item.setData(0, Qt.UserRole, project)
+
+        self.projects_root.addChild(item)
+
+        self.projects_root.setExpanded(True)
+
+    def clear_projects(self):
+
+        self.projects_root.takeChildren()
+
+    def load_projects(self, projects: list[Project]):
+
+        self.clear_projects()
+
+        for project in projects:
+            self.add_project(project)
+
+    def on_item_clicked(self, item, column):
+
+        project = item.data(0, Qt.UserRole)
+
+        if isinstance(project, Project):
+            self.project_selected.emit(project)
