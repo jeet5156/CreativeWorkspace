@@ -110,13 +110,20 @@ class MainWindow(QMainWindow):
             self.context.project_service.all_projects()
         )
 
-    def project_selected(self, project):
+    def project_selected(self, project, section):
 
         self.context.set_current_project(project)
 
-        self.workspace.show_dashboard(project)
+        if section == "dashboard":
+            self.workspace.show_dashboard(project)
 
-        print(f"Selected: {project.name}")
+        elif section == "notes":
+            self.workspace.show_notes(project)
+
+        else:
+            self.workspace.show_dashboard(project)
+
+        print(f"Selected: {project.name} ({section})")
 
     def new_project(self):
 
@@ -140,7 +147,7 @@ class MainWindow(QMainWindow):
             self.context.project_service.all_projects()
         )
 
-        self.project_selected(project)
+        self.project_selected(project, "dashboard")
 
         self.status.showMessage(
             f"Project '{project.name}' created successfully.",
@@ -183,7 +190,7 @@ class MainWindow(QMainWindow):
             self.context.project_service.all_projects()
         )
 
-        self.project_selected(project)
+        self.project_selected(project, "dashboard")
 
         self.status.showMessage(
             f"Opened project '{project.name}'.",

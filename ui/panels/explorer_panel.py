@@ -12,7 +12,8 @@ from models.project import Project
 
 class ExplorerPanel(QWidget):
 
-    project_selected = Signal(Project)
+    # Emits: (project, section)
+    project_selected = Signal(Project, str)
 
     def __init__(self):
         super().__init__()
@@ -26,7 +27,6 @@ class ExplorerPanel(QWidget):
 
         self.projects_root = QTreeWidgetItem(["📁 Projects"])
         self.tree.addTopLevelItem(self.projects_root)
-
         self.projects_root.setExpanded(True)
 
         self.tree.itemClicked.connect(self.on_item_clicked)
@@ -35,19 +35,22 @@ class ExplorerPanel(QWidget):
 
         project_item = QTreeWidgetItem([f"📁 {project.name}"])
         project_item.setData(0, Qt.UserRole, project)
+        project_item.setData(0, Qt.UserRole + 1, "dashboard")
 
         self.projects_root.addChild(project_item)
 
-        folders = [
-            "📝 Notes",
-            "🖼 References",
-            "📦 Assets",
-            "🎬 Renders",
-            "📤 Exports",
+        sections = [
+            ("📝 Notes", "notes"),
+            ("🖼 References", "references"),
+            ("📦 Assets", "assets"),
+            ("🎬 Renders", "renders"),
+            ("📤 Exports", "exports"),
         ]
 
-        for folder in folders:
-            child = QTreeWidgetItem([folder])
+        for title, section in sections:
+            child = QTreeWidgetItem([title])
+            child.setData(0, Qt.UserRole, project)
+            child.setData(0, Qt.UserRole + 1, section)
             project_item.addChild(child)
 
         project_item.setExpanded(True)
@@ -55,7 +58,7 @@ class ExplorerPanel(QWidget):
     def clear_projects(self):
         self.projects_root.takeChildren()
 
-    def load_projects(self, projects: list[Project]):
+    def load_projects(self, projects):
 
         self.clear_projects()
 
@@ -67,6 +70,7 @@ class ExplorerPanel(QWidget):
     def on_item_clicked(self, item, column):
 
         project = item.data(0, Qt.UserRole)
+        section = item.data(0, Qt.UserRole + 1)
 
         if isinstance(project, Project):
-            self.project_selected.emit(project)
+            self.project_selected.emit(project, section)
