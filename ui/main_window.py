@@ -15,7 +15,7 @@ from core.app_context import AppContext
 
 from ui.dialogs.new_project_dialog import NewProjectDialog
 from ui.panels.explorer_panel import ExplorerPanel
-from ui.panels.dashboard_panel import DashboardPanel
+from ui.panels.workspace_panel import WorkspacePanel
 from ui.panels.inspector_panel import InspectorPanel
 
 
@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
 
         self.explorer = ExplorerPanel()
-        self.dashboard = DashboardPanel()
+        self.workspace = WorkspacePanel()
         self.inspector = InspectorPanel()
 
         self.explorer.project_selected.connect(
@@ -80,7 +80,7 @@ class MainWindow(QMainWindow):
         )
 
         splitter.addWidget(self.explorer)
-        splitter.addWidget(self.dashboard)
+        splitter.addWidget(self.workspace)
         splitter.addWidget(self.inspector)
 
         splitter.setStretchFactor(0, 1)
@@ -113,7 +113,8 @@ class MainWindow(QMainWindow):
     def project_selected(self, project):
 
         self.context.set_current_project(project)
-        self.dashboard.show_project(project)
+
+        self.workspace.show_dashboard(project)
 
         print(f"Selected: {project.name}")
 
@@ -138,6 +139,8 @@ class MainWindow(QMainWindow):
         self.explorer.load_projects(
             self.context.project_service.all_projects()
         )
+
+        self.project_selected(project)
 
         self.status.showMessage(
             f"Project '{project.name}' created successfully.",
