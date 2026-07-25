@@ -3,10 +3,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QLabel,
 )
-
 from PySide6.QtCore import QTimer
+from pathlib import Path
 
 from services.notes_service import NotesService
+from services.clipboard_service import ClipboardService
 from ui.widgets.document_editor import DocumentEditor
 
 
@@ -18,6 +19,7 @@ class NotesPanel(QWidget):
         self.project = None
 
         self.notes = NotesService()
+        self.clipboard = ClipboardService()
 
         layout = QVBoxLayout(self)
 
@@ -30,14 +32,16 @@ class NotesPanel(QWidget):
 
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
-
         self.timer.timeout.connect(self.autosave)
 
-        # Autosave after typing
-        self.editor.editor.textChanged.connect(self.restart_timer)
-
-        # Ctrl+S / Save button
+        # Existing signals
+        self.editor.text_changed.connect(self.restart_timer)
         self.editor.save_requested.connect(self.autosave)
+
+        # New signal
+        self.editor.paste_image_requested.connect(
+            self.paste_image
+        )
 
     # ---------------------------------------------------------
 
@@ -45,20 +49,24 @@ class NotesPanel(QWidget):
 
         self.project = project
 
-        self.editor.editor.blockSignals(True)
+        notes_folder = (
+            Path(project.location)
+            / "Notes"
+        )
+
+        self.editor.set_base_path(
+            str(notes_folder)
+        )
 
         self.editor.set_text(
             self.notes.load(project)
         )
-
-        self.editor.editor.blockSignals(False)
 
         self.status.setText("")
 
     # ---------------------------------------------------------
 
     def restart_timer(self):
-
         self.timer.start()
 
     # ---------------------------------------------------------
@@ -76,3 +84,27 @@ class NotesPanel(QWidget):
         )
 
         self.status.setText("✓ Auto Saved")
+
+    # ---------------------------------------------------------
+
+    def paste_image(self):
+
+        if self.project is None:
+            return
+
+        success, image = self.clipboard.get_image()
+
+        if not success:
+            return
+
+        _, markdown_path = self.notes.save_image(
+            self.project,
+            image,
+        )
+
+        self.editor.insert_text(
+            f"![]({markdown_path})\n"
+        )
+
+        # Save immediately
+        self.autosave()

@@ -1,16 +1,24 @@
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction, QTextCursor, QKeySequence, QShortcut
+from PySide6.QtCore import Signal, Qt, QEvent
+from PySide6.QtGui import (
+    QAction,
+    QTextCursor,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QWidget,
     QTextEdit,
     QVBoxLayout,
     QToolBar,
+    QApplication,
 )
 
 
 class MarkdownEditor(QWidget):
 
     save_requested = Signal()
+    text_changed = Signal()
+    paste_image_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -23,11 +31,50 @@ class MarkdownEditor(QWidget):
 
         self.editor = QTextEdit()
         self.editor.setAcceptRichText(False)
+        self.editor.textChanged.connect(self.text_changed.emit)
+        self.editor.installEventFilter(self)
+
         layout.addWidget(self.editor)
 
         self.create_toolbar()
         self.create_shortcuts()
 
+    # ---------------------------------------------------------
+    # Event Filter
+    # ---------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+
+        if obj is self.editor and event.type() == QEvent.KeyPress:
+
+            if event.matches(QKeySequence.StandardKey.Paste):
+                self.paste()
+                return True
+
+        return super().eventFilter(obj, event)
+
+    # ---------------------------------------------------------
+    # Clipboard
+    # ---------------------------------------------------------
+
+    def can_paste_image(self):
+
+        mime = QApplication.clipboard().mimeData()
+
+        return (
+            mime is not None
+            and mime.hasImage()
+        )
+
+    def paste(self):
+
+        if self.can_paste_image():
+            self.paste_image_requested.emit()
+        else:
+            self.editor.paste()
+
+    # ---------------------------------------------------------
+    # Toolbar
     # ---------------------------------------------------------
 
     def create_toolbar(self):
@@ -69,6 +116,8 @@ class MarkdownEditor(QWidget):
             self.toolbar.addAction(action)
 
     # ---------------------------------------------------------
+    # Shortcuts
+    # ---------------------------------------------------------
 
     def create_shortcuts(self):
 
@@ -91,7 +140,7 @@ class MarkdownEditor(QWidget):
         )
 
     # ---------------------------------------------------------
-    # Generic helpers
+    # Helpers
     # ---------------------------------------------------------
 
     def toggle_wrapper(self, wrapper):
@@ -109,8 +158,6 @@ class MarkdownEditor(QWidget):
             text = f"{wrapper}{text}{wrapper}"
 
         cursor.insertText(text)
-
-    # ---------------------------------------------------------
 
     def prefix_selected_lines(self, prefix):
 
@@ -161,9 +208,23 @@ class MarkdownEditor(QWidget):
         self.prefix_selected_lines("> ")
 
     # ---------------------------------------------------------
+    # Public API
+    # ---------------------------------------------------------
 
     def set_text(self, text):
         self.editor.setPlainText(text)
 
     def text(self):
         return self.editor.toPlainText()
+
+    def insert_text(self, text):
+        self.editor.insertPlainText(text)
+
+    def clear(self):
+        self.editor.clear()
+
+    def set_focus(self):
+        self.editor.setFocus()
+
+    def block_signals(self, block):
+        self.editor.blockSignals(block)
