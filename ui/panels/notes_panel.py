@@ -1,13 +1,14 @@
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-)
-from PySide6.QtCore import QTimer
 from pathlib import Path
 
-from services.notes_service import NotesService
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import (
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
+
 from services.clipboard_service import ClipboardService
+from services.notes_service import NotesService
 from ui.widgets.document_editor import DocumentEditor
 
 
@@ -34,15 +35,14 @@ class NotesPanel(QWidget):
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.autosave)
 
-        # Existing signals
         self.editor.text_changed.connect(self.restart_timer)
         self.editor.save_requested.connect(self.autosave)
-
-        # New signal
         self.editor.paste_image_requested.connect(
             self.paste_image
         )
 
+    # ---------------------------------------------------------
+    # Project
     # ---------------------------------------------------------
 
     def show_project(self, project):
@@ -58,18 +58,20 @@ class NotesPanel(QWidget):
             str(notes_folder)
         )
 
-        self.editor.set_text(
-            self.notes.load(project)
-        )
+        # Load Document instead of Markdown
+        document = self.notes.load_document(project)
+
+        self.editor.set_document(document)
 
         self.status.setText("")
 
     # ---------------------------------------------------------
+    # Autosave
+    # ---------------------------------------------------------
 
     def restart_timer(self):
-        self.timer.start()
 
-    # ---------------------------------------------------------
+        self.timer.start()
 
     def autosave(self):
 
@@ -78,13 +80,16 @@ class NotesPanel(QWidget):
         if self.project is None:
             return
 
-        self.notes.save(
+        # Save Document instead of Markdown
+        self.notes.save_document(
             self.project,
-            self.editor.text(),
+            self.editor.document(),
         )
 
         self.status.setText("✓ Auto Saved")
 
+    # ---------------------------------------------------------
+    # Clipboard
     # ---------------------------------------------------------
 
     def paste_image(self):
@@ -106,5 +111,4 @@ class NotesPanel(QWidget):
             f"![]({markdown_path})\n"
         )
 
-        # Save immediately
         self.autosave()

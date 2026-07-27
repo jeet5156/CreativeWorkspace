@@ -1,6 +1,6 @@
-from PySide6.QtCore import Signal, Qt, QEvent
+from PySide6.QtCore import Signal, QEvent
 from PySide6.QtGui import (
-    QAction,
+    
     QTextCursor,
     QKeySequence,
     QShortcut,
@@ -9,12 +9,12 @@ from PySide6.QtWidgets import (
     QWidget,
     QTextEdit,
     QVBoxLayout,
-    QToolBar,
+
     QApplication,
 )
 
 
-class MarkdownEditor(QWidget):
+class DocumentCanvas(QWidget):
 
     save_requested = Signal()
     text_changed = Signal()
@@ -25,18 +25,18 @@ class MarkdownEditor(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-
-        self.toolbar = QToolBar()
-        layout.addWidget(self.toolbar)
-
         self.editor = QTextEdit()
+
         self.editor.setAcceptRichText(False)
-        self.editor.textChanged.connect(self.text_changed.emit)
+
+        self.editor.textChanged.connect(
+            self.text_changed.emit
+        )
+
         self.editor.installEventFilter(self)
 
         layout.addWidget(self.editor)
-
-        self.create_toolbar()
+        
         self.create_shortcuts()
 
     # ---------------------------------------------------------
@@ -73,48 +73,7 @@ class MarkdownEditor(QWidget):
         else:
             self.editor.paste()
 
-    # ---------------------------------------------------------
-    # Toolbar
-    # ---------------------------------------------------------
-
-    def create_toolbar(self):
-
-        items = [
-
-            ("B", self.bold, "Bold"),
-            ("I", self.italic, "Italic"),
-
-            None,
-
-            ("H1", lambda: self.heading(1), "Heading 1"),
-            ("H2", lambda: self.heading(2), "Heading 2"),
-            ("H3", lambda: self.heading(3), "Heading 3"),
-
-            None,
-
-            ("•", self.bullet_list, "Bullet List"),
-            ("☑", self.checklist, "Checklist"),
-            (">", self.quote, "Quote"),
-
-            None,
-
-            ("Save", self.save_requested.emit, "Save"),
-        ]
-
-        for item in items:
-
-            if item is None:
-                self.toolbar.addSeparator()
-                continue
-
-            text, slot, tooltip = item
-
-            action = QAction(text, self)
-            action.setToolTip(tooltip)
-            action.triggered.connect(slot)
-
-            self.toolbar.addAction(action)
-
+    
     # ---------------------------------------------------------
     # Shortcuts
     # ---------------------------------------------------------
@@ -189,22 +148,22 @@ class MarkdownEditor(QWidget):
     # Formatting
     # ---------------------------------------------------------
 
-    def bold(self):
+    def apply_bold(self):
         self.toggle_wrapper("**")
 
-    def italic(self):
+    def apply_italic(self):
         self.toggle_wrapper("*")
 
-    def heading(self, level):
+    def apply_heading(self, level):
         self.prefix_selected_lines("#" * level + " ")
 
-    def bullet_list(self):
+    def apply_bullet(self):
         self.prefix_selected_lines("- ")
 
-    def checklist(self):
+    def apply_checklist(self):
         self.prefix_selected_lines("- [ ] ")
 
-    def quote(self):
+    def apply_quote(self):
         self.prefix_selected_lines("> ")
 
     # ---------------------------------------------------------
@@ -228,3 +187,13 @@ class MarkdownEditor(QWidget):
 
     def block_signals(self, block):
         self.editor.blockSignals(block)
+        
+    # ---------------------------------------------------------
+    # Public API
+    # ---------------------------------------------------------
+    def undo(self):
+    self.editor.undo()
+
+
+    def redo(self):
+        self.editor.redo()

@@ -11,7 +11,7 @@ class MarkdownWriter(DocumentWriter):
 
         for block in document:
 
-            if block.block_type == "heading":
+            if block.block_type == BlockType.HEADING:
 
                 level = block.get("level", 1)
 

@@ -1,3 +1,4 @@
+from ui.widgets.document_toolbar import DocumentToolbar
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
@@ -7,7 +8,11 @@ from PySide6.QtWidgets import (
     QSplitter,
 )
 
-from ui.widgets.markdown_editor import MarkdownEditor
+from engines.document.document import Document
+from engines.document.markdown_reader import MarkdownReader
+from engines.document.markdown_writer import MarkdownWriter
+
+from ui.widgets.document_canvas import DocumentCanvas
 from ui.widgets.markdown_preview import MarkdownPreview
 
 
@@ -22,6 +27,11 @@ class DocumentEditor(QWidget):
 
         self.base_path = None
 
+        self.reader = MarkdownReader()
+        self.writer = MarkdownWriter()
+
+        self._document = Document()
+
         # --------------------------------------------------
         # Main Layout
         # --------------------------------------------------
@@ -29,6 +39,8 @@ class DocumentEditor(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(4)
+        self.toolbar = DocumentToolbar()
+        main_layout.addWidget(self.toolbar)
 
         # --------------------------------------------------
         # View Toolbar
@@ -54,14 +66,45 @@ class DocumentEditor(QWidget):
 
         self.splitter = QSplitter(Qt.Horizontal)
 
-        self.editor = MarkdownEditor()
+        self.canvas = DocumentCanvas()
+        # --------------------------------------------------
+        # Toolbar -> Canvas
+        # --------------------------------------------------
+
+        self.toolbar.bold_requested.connect(
+            self.canvas.apply_bold
+        )
+
+        self.toolbar.italic_requested.connect(
+            self.canvas.apply_italic
+        )
+
+        self.toolbar.heading_requested.connect(
+            self.canvas.apply_heading
+        )
+
+        self.toolbar.bullet_requested.connect(
+            self.canvas.apply_bullet
+        )
+
+        self.toolbar.checklist_requested.connect(
+            self.canvas.apply_checklist
+        )
+
+        self.toolbar.quote_requested.connect(
+            self.canvas.apply_quote
+        )
+
+        self.toolbar.save_requested.connect(
+            self.save_requested.emit
+        )
         self.preview = MarkdownPreview()
 
-        self.editor.paste_image_requested.connect(
+        self.canvas.paste_image_requested.connect(
             self.paste_image_requested.emit
         )
 
-        self.splitter.addWidget(self.editor)
+        self.splitter.addWidget(self.canvas)
         self.splitter.addWidget(self.preview)
 
         self.splitter.setStretchFactor(0, 1)
@@ -73,27 +116,18 @@ class DocumentEditor(QWidget):
         # Signals
         # --------------------------------------------------
 
-        self.editor.text_changed.connect(
+        self.canvas.text_changed.connect(
             self._editor_text_changed
         )
 
-        self.editor.save_requested.connect(
+        self.canvas.save_requested.connect(
             self.save_requested.emit
         )
 
-        self.btn_edit.clicked.connect(
-            self.show_edit
-        )
+        self.btn_edit.clicked.connect(self.show_edit)
+        self.btn_split.clicked.connect(self.show_split)
+        self.btn_preview.clicked.connect(self.show_preview)
 
-        self.btn_split.clicked.connect(
-            self.show_split
-        )
-
-        self.btn_preview.clicked.connect(
-            self.show_preview
-        )
-
-        # Default view
         self.show_split()
 
     # --------------------------------------------------
@@ -101,75 +135,112 @@ class DocumentEditor(QWidget):
     # --------------------------------------------------
 
     def set_base_path(self, path):
+
         self.base_path = path
-        print("Base Path:", self.base_path)
+
     # --------------------------------------------------
     # Internal
     # --------------------------------------------------
 
     def _editor_text_changed(self):
 
-        text = self.editor.text()
+        markdown = self.canvas.text()
 
+        # Markdown -> Document
+        self._document = self.reader.load(markdown)
+
+        # Update preview
         self.preview.set_markdown(
-            text,
+            markdown,
             self.base_path,
         )
 
         self.text_changed.emit()
 
     # --------------------------------------------------
-    # Public API
+    # New Document API
+    # --------------------------------------------------
+
+    def set_document(self, document: Document):
+
+        self._document = document
+
+        markdown = self.writer.save(document)
+
+        self.canvas.block_signals(True)
+        self.canvas.set_text(markdown)
+        self.canvas.block_signals(False)
+
+        self.preview.set_markdown(
+            markdown,
+            self.base_path,
+        )
+
+    def document(self) -> Document:
+
+        markdown = self.canvas.text()
+
+        self._document = self.reader.load(markdown)
+
+        return self._document
+
+    # --------------------------------------------------
+    # Compatibility API
+    # (Temporary)
     # --------------------------------------------------
 
     def set_text(self, text):
 
-        self.editor.block_signals(True)
-        self.editor.set_text(text)
-        self.editor.block_signals(False)
+        document = self.reader.load(text)
 
-        self.preview.set_markdown(
-            text,
-            self.base_path,
-        )
+        self.set_document(document)
 
     def text(self):
-        return self.editor.text()
+
+        return self.writer.save(
+            self.document()
+        )
 
     def insert_text(self, text):
 
-        self.editor.insert_text(text)
+        self.canvas.insert_text(text)
 
-        self.preview.set_markdown(
-            self.editor.text(),
-            self.base_path,
-        )
+        self._editor_text_changed()
 
-        self.text_changed.emit()
+    # --------------------------------------------------
+    # Helpers
+    # --------------------------------------------------
 
     def clear(self):
-        self.editor.clear()
+
+        self.set_document(Document())
 
     def block_signals(self, block):
-        self.editor.block_signals(block)
+
+        self.canvas.block_signals(block)
 
     def set_focus(self):
-        self.editor.set_focus()
+
+        self.canvas.set_focus()
 
     # --------------------------------------------------
     # View Modes
     # --------------------------------------------------
 
     def show_edit(self):
-        self.editor.show()
+
+        self.canvas.show()
         self.preview.hide()
 
     def show_preview(self):
-        print("Preview clicked")
-        self.editor.hide()
+
+        self.canvas.hide()
         self.preview.show()
         self.preview.raise_()
 
     def show_split(self):
-        self.editor.show()
+
+        self.canvas.show()
         self.preview.show()
+        
+        

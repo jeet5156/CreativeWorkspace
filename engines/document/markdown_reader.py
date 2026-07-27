@@ -20,9 +20,9 @@ class MarkdownReader(DocumentReader):
 
         def flush_paragraph():
             if paragraph:
-                document.add(
+                document.append(
                     Block(
-                        block_type="paragraph",
+                        block_type=BlockType.PARAGRAPH,
                         content="\n".join(paragraph).strip()
                     )
                 )
@@ -44,9 +44,9 @@ class MarkdownReader(DocumentReader):
 
                 title = stripped[level:].strip()
 
-                document.add(
+                document.append(
                     Block(
-                        block_type="heading",
+                        block_type=BlockType.HEADING,
                         content=title,
                         properties={
                             "level": level
@@ -64,9 +64,9 @@ class MarkdownReader(DocumentReader):
 
                 alt, path = match.groups()
 
-                document.add(
+                document.append(
                     Block(
-                        block_type="image",
+                        block_type=BlockType.IMAGE,
                         content=path,
                         properties={
                             "alt": alt

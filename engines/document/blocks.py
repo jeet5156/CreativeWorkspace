@@ -1,37 +1,84 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 from uuid import uuid4
 
 
+# ============================================================
+# Base Block
+# ============================================================
+
 @dataclass
 class Block:
-    """
-    Base block for every document element.
-
-    Examples:
-        heading
-        paragraph
-        image
-        checklist
-        quote
-        code
-        callout
-        gallery
-        asset
-    """
-
-    block_type: str
-
-    content: Any = None
-
-    properties: dict[str, Any] = field(default_factory=dict)
 
     id: str = field(default_factory=lambda: str(uuid4()))
 
-    def get(self, key: str, default=None):
-        return self.properties.get(key, default)
+    @property
+    def type(self):
+        return self.__class__.__name__.replace("Block", "").lower()
 
-    def set(self, key: str, value):
-        self.properties[key] = value
+
+# ============================================================
+# Paragraph
+# ============================================================
+
+@dataclass
+class ParagraphBlock(Block):
+
+    text: str = ""
+
+
+# ============================================================
+# Heading
+# ============================================================
+
+@dataclass
+class HeadingBlock(Block):
+
+    text: str = ""
+
+    level: int = 1
+
+
+# ============================================================
+# Image
+# ============================================================
+
+@dataclass
+class ImageBlock(Block):
+
+    path: str = ""
+
+    alt: str = ""
+
+    caption: str = ""
+
+    width: int | None = None
+
+
+# ============================================================
+# Quote
+# ============================================================
+
+@dataclass
+class QuoteBlock(Block):
+
+    text: str = ""
+
+
+# ============================================================
+# Checklist
+# ============================================================
+
+@dataclass
+class ChecklistItem:
+
+    text: str
+
+    checked: bool = False
+
+
+@dataclass
+class ChecklistBlock(Block):
+
+    items: list[ChecklistItem] = field(default_factory=list)
