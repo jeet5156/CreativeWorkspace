@@ -78,6 +78,12 @@ class MainWindow(QMainWindow):
         self.explorer.project_selected.connect(
             self.project_selected
         )
+        self.explorer.set_snapshot_requested.connect(
+            self.set_snapshot
+        )
+        self.explorer.remove_snapshot_requested.connect(
+            self.remove_snapshot
+        )
 
         splitter.addWidget(self.explorer)
         splitter.addWidget(self.workspace)
@@ -152,6 +158,40 @@ class MainWindow(QMainWindow):
 
         self.status.showMessage(
             f"Project '{project.name}' created successfully.",
+            5000,
+        )
+
+    def set_snapshot(self, project):
+
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Snapshot",
+            project.location,
+            "Images (*.png *.jpg *.jpeg *.webp)",
+        )
+
+        if not filename:
+            return
+
+        self.context.project_service.set_snapshot(project, filename)
+
+        if self.context.current_project == project:
+            self.workspace.show_dashboard(project)
+
+        self.status.showMessage(
+            f"Snapshot updated for '{project.name}'.",
+            5000,
+        )
+
+    def remove_snapshot(self, project):
+
+        self.context.project_service.remove_snapshot(project)
+
+        if self.context.current_project == project:
+            self.workspace.show_dashboard(project)
+
+        self.status.showMessage(
+            f"Snapshot removed for '{project.name}'.",
             5000,
         )
 

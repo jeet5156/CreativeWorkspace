@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy
 
 
@@ -52,7 +52,9 @@ class ImagePreview(QLabel):
             self.clear()
             return
 
-        pixmap = QPixmap(str(path))
+        # Decode from the file on every load. QPixmap(filename) can reuse a
+        # cached image when a snapshot is replaced at the same path.
+        pixmap = QPixmap.fromImage(QImage(str(path)))
 
         if pixmap.isNull():
             self.clear()

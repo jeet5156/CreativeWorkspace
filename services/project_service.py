@@ -73,6 +73,20 @@ class ProjectService:
 
         return project
 
+    def set_snapshot(self, project, snapshot_path):
+
+        shutil.copy2(
+            snapshot_path,
+            Path(project.location) / "snapshot.png",
+        )
+
+    def remove_snapshot(self, project):
+
+        snapshot = Path(project.location) / "snapshot.png"
+
+        if snapshot.exists():
+            snapshot.unlink()
+
     def load_project(self, project_folder):
 
         project_folder = Path(project_folder)

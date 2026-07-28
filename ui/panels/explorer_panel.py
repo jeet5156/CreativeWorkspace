@@ -1,6 +1,8 @@
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
 
 from PySide6.QtWidgets import (
+    QMenu,
     QWidget,
     QVBoxLayout,
     QTreeWidget,
@@ -14,6 +16,8 @@ class ExplorerPanel(QWidget):
 
     # Emits: (project, section)
     project_selected = Signal(Project, str)
+    set_snapshot_requested = Signal(Project)
+    remove_snapshot_requested = Signal(Project)
 
     def __init__(self):
         super().__init__()
@@ -22,8 +26,13 @@ class ExplorerPanel(QWidget):
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.on_context_menu)
 
         layout.addWidget(self.tree)
+
+        self._context_menu_project = None
+        self._create_context_menu_actions()
 
         self.projects_root = QTreeWidgetItem(["📁 Projects"])
         self.tree.addTopLevelItem(self.projects_root)
@@ -67,6 +76,44 @@ class ExplorerPanel(QWidget):
 
         self.projects_root.setExpanded(True)
 
+    def _create_context_menu_actions(self):
+
+        self.set_snapshot_action = QAction("Set Snapshot", self)
+        self.set_snapshot_action.triggered.connect(
+            self._request_set_snapshot
+        )
+
+        self.remove_snapshot_action = QAction("Remove Snapshot", self)
+        self.remove_snapshot_action.triggered.connect(
+            self._request_remove_snapshot
+        )
+
+    def on_context_menu(self, position):
+
+        item = self.tree.itemAt(position)
+        project = item.data(0, Qt.UserRole) if item else None
+
+        if not isinstance(project, Project):
+            return
+
+        self._context_menu_project = project
+
+        menu = QMenu(self)
+        menu.addAction(self.set_snapshot_action)
+        menu.addAction(self.remove_snapshot_action)
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+        self._context_menu_project = None
+
+    def _request_set_snapshot(self):
+
+        if self._context_menu_project is not None:
+            self.set_snapshot_requested.emit(self._context_menu_project)
+
+    def _request_remove_snapshot(self):
+
+        if self._context_menu_project is not None:
+            self.remove_snapshot_requested.emit(self._context_menu_project)
     def on_item_clicked(self, item, column):
 
         project = item.data(0, Qt.UserRole)
