@@ -1,16 +1,15 @@
 from PySide6.QtCore import Signal, QEvent
 from PySide6.QtGui import (
-    
     QTextCursor,
     QKeySequence,
     QShortcut,
 )
 from PySide6.QtWidgets import (
-    QWidget,
+    QApplication,
     QTextEdit,
     QVBoxLayout,
-
-    QApplication,
+    QWidget,
+    QInputDialog,
 )
 
 
@@ -25,8 +24,8 @@ class DocumentCanvas(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.editor = QTextEdit()
 
+        self.editor = QTextEdit()
         self.editor.setAcceptRichText(False)
 
         self.editor.textChanged.connect(
@@ -36,7 +35,7 @@ class DocumentCanvas(QWidget):
         self.editor.installEventFilter(self)
 
         layout.addWidget(self.editor)
-        
+
         self.create_shortcuts()
 
     # ---------------------------------------------------------
@@ -73,7 +72,6 @@ class DocumentCanvas(QWidget):
         else:
             self.editor.paste()
 
-    
     # ---------------------------------------------------------
     # Shortcuts
     # ---------------------------------------------------------
@@ -89,13 +87,13 @@ class DocumentCanvas(QWidget):
         QShortcut(
             QKeySequence.Bold,
             self,
-            activated=self.bold,
+            activated=self.apply_bold,
         )
 
         QShortcut(
             QKeySequence.Italic,
             self,
-            activated=self.italic,
+            activated=self.apply_italic,
         )
 
     # ---------------------------------------------------------
@@ -121,28 +119,31 @@ class DocumentCanvas(QWidget):
     def prefix_selected_lines(self, prefix):
 
         cursor = self.editor.textCursor()
-
-        if cursor.hasSelection():
-
-            start = cursor.selectionStart()
-            end = cursor.selectionEnd()
-
-            cursor.setPosition(start)
-            cursor.movePosition(QTextCursor.StartOfLine)
-
-            while cursor.position() <= end:
-
-                cursor.insertText(prefix)
-
-                if not cursor.movePosition(QTextCursor.NextBlock):
-                    break
-
-                end += len(prefix)
-
-        else:
-
-            cursor.movePosition(QTextCursor.StartOfLine)
-            cursor.insertText(prefix)
+        cursor.beginEditBlock()
+        try:
+            if cursor.hasSelection():
+                start = cursor.selectionStart()
+                end = cursor.selectionEnd()
+                doc=self.editor.document()
+                start_block=doc.findBlock(start)
+                end_block=doc.findBlock(max(start,end-1))
+                block=start_block
+                while block.isValid():
+                    tc=QTextCursor(block)
+                    tc.select(QTextCursor.LineUnderCursor)
+                    line=tc.selectedText()
+                    new_line=line[len(prefix):] if line.startswith(prefix) else prefix+line
+                    tc.insertText(new_line)
+                    if block==end_block:
+                        break
+                    block=block.next()
+            else:
+                cursor.movePosition(QTextCursor.StartOfLine)
+                cursor.select(QTextCursor.LineUnderCursor)
+                line=cursor.selectedText()
+                cursor.insertText(line[len(prefix):] if line.startswith(prefix) else prefix+line)
+        finally:
+            cursor.endEditBlock()
 
     # ---------------------------------------------------------
     # Formatting
@@ -166,6 +167,29 @@ class DocumentCanvas(QWidget):
     def apply_quote(self):
         self.prefix_selected_lines("> ")
 
+
+    def insert_divider(self):
+        cursor=self.editor.textCursor()
+        cursor.insertText("\n---\n")
+
+    def insert_link(self):
+        url,ok=QInputDialog.getText(self,"Insert Link","URL:")
+        if not ok or not url:
+            return
+        cursor=self.editor.textCursor()
+        text=cursor.selectedText() or "Link"
+        cursor.insertText(f"[{text}]({url})")
+
+    # ---------------------------------------------------------
+    # Editing
+    # ---------------------------------------------------------
+
+    def undo(self):
+        self.editor.undo()
+
+    def redo(self):
+        self.editor.redo()
+
     # ---------------------------------------------------------
     # Public API
     # ---------------------------------------------------------
@@ -187,13 +211,3 @@ class DocumentCanvas(QWidget):
 
     def block_signals(self, block):
         self.editor.blockSignals(block)
-        
-    # ---------------------------------------------------------
-    # Public API
-    # ---------------------------------------------------------
-    def undo(self):
-    self.editor.undo()
-
-
-    def redo(self):
-        self.editor.redo()

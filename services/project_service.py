@@ -2,6 +2,7 @@ from pathlib import Path
 from dataclasses import asdict
 from datetime import datetime
 import json
+import shutil
 
 from models.project import Project
 
@@ -17,6 +18,7 @@ class ProjectService:
         project_type: str,
         location: str,
         description: str,
+        snapshot_path: str = "",
     ) -> Project:
 
         project_folder = Path(location) / name
@@ -38,6 +40,24 @@ class ProjectService:
             "Exports",
         ):
             (project_folder / folder).mkdir(exist_ok=True)
+
+        # -----------------------------------------
+        # Copy project snapshot
+        # -----------------------------------------
+
+        if snapshot_path:
+
+            source = Path(snapshot_path)
+
+            if source.exists():
+                shutil.copy2(
+                    source,
+                    project_folder / "snapshot.png",
+                )
+
+        # -----------------------------------------
+        # Save project.json
+        # -----------------------------------------
 
         data = asdict(project)
         data["created"] = project.created.isoformat()
@@ -69,7 +89,9 @@ class ProjectService:
             project_type=data["project_type"],
             location=data["location"],
             description=data.get("description", ""),
-            created=datetime.fromisoformat(data["created"]),
+            created=datetime.fromisoformat(
+                data["created"]
+            ),
         )
 
         self.add_project(project)
@@ -79,9 +101,7 @@ class ProjectService:
     def add_project(self, project):
 
         for p in self.projects:
-            if (
-                Path(p.location) == Path(project.location)
-            ):
+            if Path(p.location) == Path(project.location):
                 return
 
         self.projects.append(project)

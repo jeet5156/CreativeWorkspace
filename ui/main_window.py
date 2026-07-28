@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
             dialog.type_combo.currentText(),
             dialog.location_edit.text(),
             dialog.description_edit.toPlainText(),
+            dialog.snapshot_path,
         )
 
         self.context.settings_service.add_recent_project(

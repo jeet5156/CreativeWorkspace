@@ -1,36 +1,93 @@
 from __future__ import annotations
 
+from .blocks import (
+    ParagraphBlock,
+    HeadingBlock,
+    ImageBlock,
+    QuoteBlock,
+    ChecklistBlock,
+)
 from .serializer import DocumentWriter
 
 
 class MarkdownWriter(DocumentWriter):
 
-    def save(self, document):
+    def save(self, document) -> str:
 
-        output = []
+        lines = []
 
         for block in document:
 
-            if block.block_type == BlockType.HEADING:
+            # -------------------------------------------------
+            # Heading
+            # -------------------------------------------------
 
-                level = block.get("level", 1)
+            if isinstance(block, HeadingBlock):
 
-                output.append(
-                    "#" * level + " " + str(block.content)
+                level = max(1, min(block.level, 6))
+
+                lines.append(
+                    f'{"#" * level} {block.text}'
                 )
 
-            elif block.block_type == "paragraph":
+            # -------------------------------------------------
+            # Paragraph
+            # -------------------------------------------------
 
-                output.append(str(block.content))
+            elif isinstance(block, ParagraphBlock):
 
-            elif block.block_type == "image":
+                text = block.text.rstrip()
 
-                alt = block.get("alt", "")
+                if text:
+                    lines.append(text)
 
-                output.append(
-                    f"![{alt}]({block.content})"
+            # -------------------------------------------------
+            # Image
+            # -------------------------------------------------
+
+            elif isinstance(block, ImageBlock):
+
+                lines.append(
+                    f'![{block.alt}]({block.path})'
                 )
 
-            output.append("")
+                if block.caption.strip():
 
-        return "\n".join(output)
+                    lines.append(block.caption.strip())
+
+            # -------------------------------------------------
+            # Quote
+            # -------------------------------------------------
+
+            elif isinstance(block, QuoteBlock):
+
+                for line in block.text.splitlines():
+
+                    lines.append(f"> {line}")
+
+            # -------------------------------------------------
+            # Checklist
+            # -------------------------------------------------
+
+            elif isinstance(block, ChecklistBlock):
+
+                for item in block.items:
+
+                    mark = "x" if item.checked else " "
+
+                    lines.append(
+                        f"- [{mark}] {item.text}"
+                    )
+
+            else:
+
+                raise TypeError(
+                    f"Unsupported block: {type(block).__name__}"
+                )
+
+            lines.append("")
+
+        while lines and lines[-1] == "":
+            lines.pop()
+
+        return "\n".join(lines)
