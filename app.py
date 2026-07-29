@@ -1,3 +1,4 @@
+# Copilot local workspace test
 import sys
 from PySide6.QtWidgets import QApplication
 
