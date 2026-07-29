@@ -18,6 +18,8 @@ class ExplorerPanel(QWidget):
     project_selected = Signal(Project, str)
     set_snapshot_requested = Signal(Project)
     remove_snapshot_requested = Signal(Project)
+    # Emits: (project, section, [paths]) when files/folders are dropped
+    files_dropped = Signal(Project, str, object)
 
     def __init__(self):
         super().__init__()
@@ -39,6 +41,9 @@ class ExplorerPanel(QWidget):
         self.projects_root.setExpanded(True)
 
         self.tree.itemClicked.connect(self.on_item_clicked)
+
+        # Enable drag & drop
+        self.setAcceptDrops(True)
 
     def add_project(self, project: Project):
 
@@ -114,6 +119,52 @@ class ExplorerPanel(QWidget):
 
         if self._context_menu_project is not None:
             self.remove_snapshot_requested.emit(self._context_menu_project)
+
+    # ---------------------
+    # Drag & Drop
+    # ---------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        # Gather local file paths
+        urls = event.mimeData().urls()
+        paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+
+        if not paths:
+            event.ignore()
+            return
+
+        # Determine drop target (project + section)
+        try:
+            tree_pos = self.tree.viewport().mapFrom(self, event.pos().toPoint())
+        except Exception:
+            tree_pos = self.tree.viewport().mapFrom(self, event.pos())
+
+        item = self.tree.itemAt(tree_pos)
+
+        project = item.data(0, Qt.UserRole) if item else None
+        section = item.data(0, Qt.UserRole + 1) if item else None
+
+        # Default to assets if no specific section
+        if section not in ("assets", "references", "notes", "renders", "exports"):
+            section = "assets"
+
+        # Emit to application to let services handle business logic
+        self.files_dropped.emit(project, section, paths)
+
+        event.acceptProposedAction()
+
+    # ---------------------
     def on_item_clicked(self, item, column):
 
         project = item.data(0, Qt.UserRole)

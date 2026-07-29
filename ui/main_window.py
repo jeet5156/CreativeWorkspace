@@ -57,8 +57,13 @@ class MainWindow(QMainWindow):
 
         menubar.addMenu("&Edit")
         menubar.addMenu("&View")
-        menubar.addMenu("&Tools")
+        tools_menu = menubar.addMenu("&Tools")
         menubar.addMenu("&Help")
+
+        # Rebuild Asset Index action
+        self.rebuild_index_action = QAction("Rebuild Asset Index", self)
+        self.rebuild_index_action.triggered.connect(self.rebuild_asset_index)
+        tools_menu.addAction(self.rebuild_index_action)
 
     def create_toolbar(self):
         toolbar = QToolBar("Main Toolbar")
@@ -84,6 +89,27 @@ class MainWindow(QMainWindow):
         self.explorer.remove_snapshot_requested.connect(
             self.remove_snapshot
         )
+        # Handle files dropped from the OS into the explorer tree
+        self.explorer.files_dropped.connect(self.on_files_dropped)
+
+        # Provide the workspace panel with app context so it can listen to asset changes
+        self.workspace.set_context(self.context)
+        # connect workspace import finished to show messages
+        try:
+            self.workspace.import_finished.connect(self.on_workspace_import_finished)
+        except Exception:
+            pass
+        # connect asset selection from workspace to inspector
+        try:
+            self.workspace.asset_workspace.asset_selected.connect(self.on_asset_selected)
+        except Exception:
+            pass
+
+        # give inspector access to context
+        try:
+            self.inspector.set_context(self.context)
+        except Exception:
+            pass
 
         splitter.addWidget(self.explorer)
         splitter.addWidget(self.workspace)
@@ -94,6 +120,31 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(2, 1)
 
         self.setCentralWidget(splitter)
+
+    def on_workspace_import_finished(self, report):
+        parts = []
+        if report.get("imported"):
+            parts.append(f"Imported {len(report['imported'])} file(s).")
+        if report.get("skipped"):
+            parts.append(f"Skipped {len(report['skipped'])} duplicate(s).")
+        if report.get("errors"):
+            parts.append("Errors:\n" + "\n".join(report['errors']))
+
+        if report.get("errors"):
+            QMessageBox.warning(self, "Import Results", "\n".join(parts))
+        else:
+            QMessageBox.information(self, "Import Results", "\n".join(parts) or "Nothing imported.")
+
+        self.status.showMessage("Import complete.", 5000)
+
+    def on_asset_selected(self, asset_id):
+        # Show asset metadata in inspector
+        if not self.context.current_project:
+            return
+        try:
+            self.inspector.show_asset(self.context.current_project, asset_id)
+        except Exception:
+            pass
 
     def create_statusbar(self):
         self.status = QStatusBar()
@@ -120,14 +171,16 @@ class MainWindow(QMainWindow):
 
         self.context.set_current_project(project)
 
-        if section == "dashboard":
-            self.workspace.show_dashboard(project)
+        # If the asset index does not exist, rebuild it automatically for older projects
+        try:
+            if not self.context.asset_service.has_index(project):
+                self.status.showMessage("Building asset index...", 2000)
+                self.context.asset_service.rebuild_index(project)
+        except Exception:
+            pass
 
-        elif section == "notes":
-            self.workspace.show_notes(project)
-
-        else:
-            self.workspace.show_dashboard(project)
+        # Delegate to workspace to display the appropriate view
+        self.workspace.show_section(project, section)
 
         print(f"Selected: {project.name} ({section})")
 
@@ -237,3 +290,61 @@ class MainWindow(QMainWindow):
             f"Opened project '{project.name}'.",
             5000,
         )
+
+    def on_files_dropped(self, project, section, paths):
+        """Called when the ExplorerPanel reports files/folders were dropped.
+        Delegate to AssetService and refresh UI.
+        """
+        if project is None:
+            QMessageBox.warning(
+                self,
+                "Import Error",
+                "Please drop files onto a project or section in the Project Explorer.",
+            )
+            return
+
+        if not paths:
+            QMessageBox.warning(
+                self,
+                "Import Error",
+                "No files or folders detected in drop.",
+            )
+            return
+
+        report = self.context.asset_service.import_paths(project, section, paths)
+
+        parts = []
+        if report.get("imported"):
+            parts.append(f"Imported {len(report['imported'])} file(s).")
+        if report.get("skipped"):
+            parts.append(f"Skipped {len(report['skipped'])} duplicate(s).")
+        if report.get("errors"):
+            parts.append("Errors:\n" + "\n".join(report['errors']))
+
+        if report.get("errors"):
+            QMessageBox.warning(self, "Import Results", "\n".join(parts))
+        else:
+            QMessageBox.information(self, "Import Results", "\n".join(parts) or "Nothing imported.")
+
+        # Refresh explorer and workspace display
+        self.explorer.load_projects(self.context.project_service.all_projects())
+        if self.context.current_project == project:
+            # Re-show dashboard to refresh any project UI
+            self.project_selected(project, "dashboard")
+
+        self.status.showMessage("Import complete.", 5000)
+
+    def rebuild_asset_index(self):
+        project = self.context.current_project
+        if project is None:
+            QMessageBox.warning(self, "Rebuild Asset Index", "No project is currently selected.")
+            return
+
+        self.status.showMessage("Rebuilding asset index...", 2000)
+        try:
+            self.context.asset_service.rebuild_index(project, force=True)
+            QMessageBox.information(self, "Rebuild Asset Index", "Asset index rebuilt successfully.")
+        except Exception:
+            QMessageBox.warning(self, "Rebuild Asset Index", "An error occurred while rebuilding the asset index.")
+        finally:
+            self.status.showMessage("Ready", 2000)
