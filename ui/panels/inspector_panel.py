@@ -20,6 +20,15 @@ class InspectorPanel(QWidget):
         title.setStyleSheet("font-weight:bold;padding:6px;font-size:14px;")
         layout.addWidget(title)
 
+        # Placeholder shown when nothing is selected
+        self.placeholder = QLabel(
+            "Select an item to view details.\n\nWhen an asset, reference, or export is selected, the Inspector shows:\n"
+            "• Filename and type\n• Category and size\n• Date added and relative path\n• Tags and notes\n"
+        )
+        self.placeholder.setWordWrap(True)
+        self.placeholder.setStyleSheet("color:#6c757d;padding:8px;")
+        layout.addWidget(self.placeholder)
+
         form = QFormLayout()
         self.filename = QLabel("-")
         self.type = QLabel("-")
@@ -39,9 +48,13 @@ class InspectorPanel(QWidget):
         form.addRow("Tags:", self.tags)
         form.addRow("Notes:", self.notes)
 
+        self._form_layout = form
         layout.addLayout(form)
 
         layout.addStretch()
+
+        # start with placeholder visible
+        self._show_placeholder(True)
 
     def set_context(self, context):
         self._context = context
@@ -55,6 +68,7 @@ class InspectorPanel(QWidget):
             return
 
         self._project = project
+        self._show_placeholder(False)
         self.filename.setText(asset.get('filename','-'))
         self.type.setText(asset.get('friendly_type','-'))
         self.category.setText(asset.get('category','-'))
@@ -65,6 +79,7 @@ class InspectorPanel(QWidget):
         self.notes.setText(asset.get('notes') or '-')
 
     def _clear(self):
+        self._show_placeholder(True)
         self.filename.setText('-')
         self.type.setText('-')
         self.category.setText('-')
@@ -74,6 +89,21 @@ class InspectorPanel(QWidget):
         self.tags.setText('-')
         self.notes.setText('-')
 
+    def _show_placeholder(self, show: bool):
+        try:
+            self.placeholder.setVisible(show)
+            # hide form rows when placeholder shown; easiest is to hide each label field
+            visible = not show
+            self.filename.setVisible(visible)
+            self.type.setVisible(visible)
+            self.category.setVisible(visible)
+            self.size.setVisible(visible)
+            self.date_added.setVisible(visible)
+            self.path.setVisible(visible)
+            self.tags.setVisible(visible)
+            self.notes.setVisible(visible)
+        except Exception:
+            pass
     def _format_size(self, size_bytes):
         try:
             size = int(size_bytes)

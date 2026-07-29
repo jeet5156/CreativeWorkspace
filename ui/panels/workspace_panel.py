@@ -4,12 +4,15 @@ from PySide6.QtCore import Signal
 from ui.panels.dashboard_panel import DashboardPanel
 from ui.panels.notes_panel import NotesPanel
 from ui.panels.asset_workspace_panel import AssetWorkspacePanel
+from ui.panels.home_workspace_panel import HomeWorkspacePanel
 
 
 class WorkspacePanel(QWidget):
 
     # Emitted after a drop/import completes: report dict
     import_finished = Signal(object)
+    # Emitted when Home workspace becomes active (True) or deactivated (False)
+    home_active = Signal(bool)
 
     def __init__(self):
         super().__init__()
@@ -18,10 +21,14 @@ class WorkspacePanel(QWidget):
 
         self.stack = QStackedWidget()
 
+        # Home workspace shown when no project selected
+        self.home = HomeWorkspacePanel()
         self.dashboard = DashboardPanel()
         self.notes = NotesPanel()
         self.asset_workspace = AssetWorkspacePanel()
 
+        # add widgets: home is default (index 0)
+        self.stack.addWidget(self.home)
         self.stack.addWidget(self.dashboard)
         self.stack.addWidget(self.notes)
         self.stack.addWidget(self.asset_workspace)
@@ -44,9 +51,36 @@ class WorkspacePanel(QWidget):
     def set_context(self, context):
         """Provide AppContext so panel can listen to asset updates."""
         self._context = context
+        # let child panels also receive context (so they can update themselves)
+        try:
+            self.home.set_context(context)
+        except Exception:
+            pass
+        try:
+            self.asset_workspace.set_context(context)
+        except Exception:
+            pass
+        try:
+            self.dashboard.set_context(context)
+        except Exception:
+            pass
         # connect asset change signals
         try:
             context.asset_service.assets_changed.connect(self._on_assets_changed)
+        except Exception:
+            pass
+
+    def show_home(self):
+        """Display the Home workspace (no project selected)."""
+        self._current_project = None
+        self._current_section = None
+        try:
+            self.home.set_context(self._context)
+        except Exception:
+            pass
+        self.stack.setCurrentWidget(self.home)
+        try:
+            self.home_active.emit(True)
         except Exception:
             pass
 
@@ -54,6 +88,11 @@ class WorkspacePanel(QWidget):
         """Show dashboard when section is 'dashboard'; otherwise the workspace view for that section.
         Reset state when switching projects so dashboard is always shown for project root.
         """
+        # If no project provided, show home
+        if project is None:
+            self.show_home()
+            return
+
         # Reset state when switching projects
         if not self._current_project or project.location != self._current_project.location:
             # new project -> reset internal state
@@ -66,6 +105,12 @@ class WorkspacePanel(QWidget):
 
         self._current_project = project
         self._current_section = section
+
+        # Ensure home is marked inactive
+        try:
+            self.home_active.emit(False)
+        except Exception:
+            pass
 
         if section == "dashboard":
             self.dashboard.show_project(project)

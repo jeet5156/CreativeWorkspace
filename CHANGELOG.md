@@ -1,8 +1,25 @@
 # Changelog
 
+
 All notable changes to Creative Workspace are documented here.
 
+
+
 ---
+## v0.3.0
+
+### Added
+- Global Explorer Search
+- Inline grouped search results
+- Asset navigation from search
+- Persistent Home workspace
+
+### Improved
+- Deterministic asset selection
+- NavigationService search routing
+
+### Fixed
+- Search result activation race condition
 
 ## [0.2.0] - 2026-07-29
 
@@ -47,3 +64,4 @@ All notable changes to Creative Workspace are documented here.
 - Dashboard
 - Snapshot preview
 - Project metadata
+

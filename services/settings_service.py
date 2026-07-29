@@ -60,3 +60,15 @@ class SettingsService:
             recent.remove(project_path)
 
         self.save(settings)
+
+    # -------------------------
+    # Splitter state helpers
+    # -------------------------
+    def get_splitter_state(self):
+        settings = self.load()
+        return settings.get("splitter_state")
+
+    def set_splitter_state(self, hex_state: str):
+        settings = self.load()
+        settings["splitter_state"] = hex_state
+        self.save(settings)

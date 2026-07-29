@@ -339,6 +339,53 @@ class AssetService(QObject):
             pass
         return True
 
+    # -----------------
+    # Favorites & Tags
+    # -----------------
+    def toggle_favorite(self, project, asset_id):
+        assets = self._ensure_index_loaded(project)
+        entry = next((a for a in assets if a.get("id") == asset_id), None)
+        if not entry:
+            return False
+        entry["favorite"] = not bool(entry.get("favorite"))
+        self._save_index(project)
+        try:
+            self.assets_changed.emit(project, entry.get("category"))
+        except Exception:
+            pass
+        return entry["favorite"]
+
+    def add_tag(self, project, asset_id, tag: str):
+        assets = self._ensure_index_loaded(project)
+        entry = next((a for a in assets if a.get("id") == asset_id), None)
+        if not entry:
+            return False
+        tags = entry.get("tags") or []
+        if tag not in tags:
+            tags.append(tag)
+            entry["tags"] = tags
+            self._save_index(project)
+            try:
+                self.assets_changed.emit(project, entry.get("category"))
+            except Exception:
+                pass
+        return True
+
+    def remove_tag(self, project, asset_id, tag: str):
+        assets = self._ensure_index_loaded(project)
+        entry = next((a for a in assets if a.get("id") == asset_id), None)
+        if not entry:
+            return False
+        tags = entry.get("tags") or []
+        if tag in tags:
+            tags.remove(tag)
+            entry["tags"] = tags
+            self._save_index(project)
+            try:
+                self.assets_changed.emit(project, entry.get("category"))
+            except Exception:
+                pass
+        return True
     def rename_asset(self, project, asset_id, new_name):
         assets = self._ensure_index_loaded(project)
         entry = next((a for a in assets if a.get("id") == asset_id), None)

@@ -36,6 +36,13 @@ class MainWindow(QMainWindow):
 
         self.load_recent_projects()
 
+        # Show Home Workspace when no project is selected on startup
+        if not self.context.current_project:
+            try:
+                self.workspace.show_home()
+            except Exception:
+                pass
+
     def create_menu(self):
         menubar = self.menuBar()
 
@@ -80,6 +87,9 @@ class MainWindow(QMainWindow):
         self.workspace = WorkspacePanel()
         self.inspector = InspectorPanel()
 
+        self.splitter = splitter
+        self._saved_splitter_sizes = None
+
         self.explorer.project_selected.connect(
             self.project_selected
         )
@@ -94,6 +104,58 @@ class MainWindow(QMainWindow):
 
         # Provide the workspace panel with app context so it can listen to asset changes
         self.workspace.set_context(self.context)
+
+        # Set up WorkspaceManager and NavigationService
+        try:
+            from ui.workspace_manager import WorkspaceManager
+            from services.navigation_service import NavigationService
+            self.workspace_manager = WorkspaceManager(self.workspace, self.context, None)
+            # create navigation service and inject into workspace manager
+            self.navigation_service = NavigationService(self.workspace_manager, self.explorer, self.context)
+            # give workspace_manager a reference to navigation_service if it needs it
+            try:
+                self.workspace_manager.set_navigation_service(self.navigation_service)
+            except Exception:
+                try:
+                    self.workspace_manager.navigation_service = self.navigation_service
+                except Exception:
+                    pass
+        except Exception:
+            self.workspace_manager = None
+            self.navigation_service = None
+
+        # connect explorer navigation signals to the navigation service
+        try:
+            if self.navigation_service:
+                self.explorer.navigation_requested.connect(self.navigation_service.handle_navigation)
+                self.explorer.project_selected.connect(lambda p, s: self.navigation_service.navigate_project(p, s))
+                # attach Explorer's search services (global search)
+                try:
+                    self.explorer.set_search_services(self.workspace_manager.find_service, self.navigation_service, self.context.app_state)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Wire Home workspace quick actions to MainWindow handlers via WorkspaceManager/navigation
+        try:
+            if self.workspace.home:
+                self.workspace.home.new_project_requested.connect(self.new_project)
+                self.workspace.home.open_project_requested.connect(self.open_project)
+                # double-click recent -> navigate
+                self.workspace.home.open_recent_project.connect(lambda proj: self.project_selected(proj, 'dashboard'))
+        except Exception:
+            pass
+
+        # Global Ctrl+F shortcut to focus Explorer search box
+        try:
+            from PySide6.QtGui import QShortcut, QKeySequence
+            sc = QShortcut(QKeySequence("Ctrl+F"), self)
+            sc.activated.connect(lambda: self.explorer.search_edit.setFocus())
+        except Exception:
+            pass
+
+
         # connect workspace import finished to show messages
         try:
             self.workspace.import_finished.connect(self.on_workspace_import_finished)
@@ -115,11 +177,46 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.workspace)
         splitter.addWidget(self.inspector)
 
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 4)
-        splitter.setStretchFactor(2, 1)
+        # Use fixed default splitter sizes on startup (Explorer ≈ 260 px, Inspector ≈ 320 px)
+        try:
+            splitter.setHandleWidth(8)  # make handle wider for easier resizing
+        except Exception:
+            pass
 
+        try:
+            # Set initial sizes: [Explorer, Workspace, Inspector]
+            splitter.setSizes([260, 800, 320])
+        except Exception:
+            # fallback to stretch factors if setSizes fails
+            try:
+                splitter.setStretchFactor(0, 1)
+                splitter.setStretchFactor(1, 4)
+                splitter.setStretchFactor(2, 1)
+            except Exception:
+                pass
+
+        # Do NOT persist splitter state for now — temporary change per request
         self.setCentralWidget(splitter)
+
+        # Connect Home active event to hide/show inspector while preserving size
+        try:
+            self.workspace.home_active.connect(self._on_home_active)
+        except Exception:
+            pass
+
+        # Connect dashboard project reveal to explorer reveal
+        try:
+            # workspace exposes dashboard instance
+            # connect dashboard reveal -> navigation service if available, otherwise fallback to explorer reveal
+            try:
+                if getattr(self, 'navigation_service', None):
+                    self.workspace.dashboard.project_reveal.connect(lambda p: self.navigation_service.navigate_project(p) if p else None)
+                else:
+                    self.workspace.dashboard.project_reveal.connect(lambda p: self.explorer.reveal_project(p) if p else None)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def on_workspace_import_finished(self, report):
         parts = []
@@ -137,12 +234,37 @@ class MainWindow(QMainWindow):
 
         self.status.showMessage("Import complete.", 5000)
 
+    def _on_home_active(self, active: bool):
+        try:
+            if active:
+                # remember sizes and hide inspector
+                try:
+                    self._saved_splitter_sizes = self.splitter.sizes()
+                except Exception:
+                    self._saved_splitter_sizes = None
+                self.inspector.setVisible(False)
+            else:
+                # show inspector and restore sizes
+                self.inspector.setVisible(True)
+                if self._saved_splitter_sizes:
+                    try:
+                        self.splitter.setSizes(self._saved_splitter_sizes)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def on_asset_selected(self, asset_id):
         # Show asset metadata in inspector
         if not self.context.current_project:
             return
         try:
             self.inspector.show_asset(self.context.current_project, asset_id)
+        except Exception:
+            pass
+        # update canonical app state so services can react (e.g., deletion clears inspector)
+        try:
+            self.context.app_state.set_current_asset(asset_id)
         except Exception:
             pass
 
@@ -182,7 +304,6 @@ class MainWindow(QMainWindow):
         # Delegate to workspace to display the appropriate view
         self.workspace.show_section(project, section)
 
-        print(f"Selected: {project.name} ({section})")
 
     def new_project(self):
 
@@ -229,7 +350,7 @@ class MainWindow(QMainWindow):
         self.context.project_service.set_snapshot(project, filename)
 
         if self.context.current_project == project:
-            self.workspace.show_dashboard(project)
+            self.workspace.show_section(project, "dashboard")
 
         self.status.showMessage(
             f"Snapshot updated for '{project.name}'.",
@@ -241,7 +362,7 @@ class MainWindow(QMainWindow):
         self.context.project_service.remove_snapshot(project)
 
         if self.context.current_project == project:
-            self.workspace.show_dashboard(project)
+            self.workspace.show_section(project, "dashboard")
 
         self.status.showMessage(
             f"Snapshot removed for '{project.name}'.",

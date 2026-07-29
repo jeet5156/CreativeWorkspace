@@ -107,8 +107,25 @@ class AssetCard(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.asset.get('id'))
-        elif event.button() == Qt.RightButton:
+        else:
+            # Let contextMenuEvent handle right-click/context menus to avoid menu dismissal when
+            # selection logic triggers UI changes during mouse press.
+            super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Emit context_requested when the OS/context menu is requested. This ensures
+        the menu is shown from contextMenuEvent, not mousePressEvent, preventing
+        transient menus from closing if selection triggers minor UI updates.
+        """
+        try:
             self.context_requested.emit(self.asset.get('id'))
+        except Exception:
+            pass
+        # Accept the event so default handling doesn't also run
+        try:
+            event.accept()
+        except Exception:
+            pass
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
