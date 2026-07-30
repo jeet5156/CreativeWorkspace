@@ -16,10 +16,9 @@ env/
 .DS_Store
 Thumbs.db
 
-# User data (do not commit)
+# User data
 workspace/
-config/activity.json
-config/settings.json
+config/
 
-# Thumbnail cache
+# Generated cache
 **/.creativeworkspace/
