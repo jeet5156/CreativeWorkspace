@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from models.project import Project
+from pathlib import Path
 
 
 class ExplorerPanel(QWidget):
@@ -102,6 +103,13 @@ class ExplorerPanel(QWidget):
         # Enable drag & drop
         self.setAcceptDrops(True)
 
+    def set_context(self, context):
+        """Provide AppContext to Explorer so it can perform folder operations."""
+        try:
+            self._context = context
+        except Exception:
+            self._context = None
+
     def add_project(self, project: Project):
 
         project_item = QTreeWidgetItem([f"📁 {project.name}"])
@@ -165,6 +173,60 @@ class ExplorerPanel(QWidget):
                     return
             except Exception:
                 continue
+
+    def get_expansion_state(self) -> dict:
+        """Return a serializable expansion state for explorer tree.
+        Includes top-level node expansion and which project nodes are expanded.
+        """
+        state = {
+            'home_expanded': bool(self.home_root.isExpanded()),
+            'projects_expanded': bool(self.projects_root.isExpanded()),
+            'clients_expanded': bool(self.clients_root.isExpanded()),
+            'assets_lib_expanded': bool(self.assets_root.isExpanded()),
+            'knowledge_expanded': bool(self.knowledge_root.isExpanded()),
+            'business_expanded': bool(self.business_root.isExpanded()),
+            'projects': []
+        }
+        try:
+            for i in range(self.projects_root.childCount()):
+                item = self.projects_root.child(i)
+                p = item.data(0, Qt.UserRole)
+                if p and item.isExpanded():
+                    try:
+                        state['projects'].append(str(p.location))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return state
+
+    def set_expansion_state(self, state: dict):
+        if not state:
+            return
+        try:
+            try:
+                self.home_root.setExpanded(bool(state.get('home_expanded', False)))
+                self.projects_root.setExpanded(bool(state.get('projects_expanded', True)))
+                self.clients_root.setExpanded(bool(state.get('clients_expanded', False)))
+                self.assets_root.setExpanded(bool(state.get('assets_lib_expanded', False)))
+                self.knowledge_root.setExpanded(bool(state.get('knowledge_expanded', False)))
+                self.business_root.setExpanded(bool(state.get('business_expanded', False)))
+            except Exception:
+                pass
+
+            projects_expanded = set(state.get('projects', []) or [])
+            for i in range(self.projects_root.childCount()):
+                item = self.projects_root.child(i)
+                p = item.data(0, Qt.UserRole)
+                try:
+                    if p and str(p.location) in projects_expanded:
+                        item.setExpanded(True)
+                    else:
+                        item.setExpanded(False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # ---------------------
     # Search integration
@@ -344,10 +406,18 @@ class ExplorerPanel(QWidget):
             self._request_remove_snapshot
         )
 
+        # Folder actions
+        self.new_folder_action = QAction("New Folder...", self)
+        self.new_folder_action.triggered.connect(self._request_new_folder)
+
+        self.delete_folder_action = QAction("Delete Folder...", self)
+        self.delete_folder_action.triggered.connect(self._request_delete_folder)
+
     def on_context_menu(self, position):
 
         item = self.tree.itemAt(position)
         project = item.data(0, Qt.UserRole) if item else None
+        section = item.data(0, Qt.UserRole + 1) if item else None
 
         if not isinstance(project, Project):
             return
@@ -357,6 +427,13 @@ class ExplorerPanel(QWidget):
         menu = QMenu(self)
         menu.addAction(self.set_snapshot_action)
         menu.addAction(self.remove_snapshot_action)
+
+        # If the clicked item is a project section (assets/references/notes/renders/exports) offer folder actions
+        if section in ("assets", "references", "notes", "renders", "exports"):
+            menu.addSeparator()
+            menu.addAction(self.new_folder_action)
+            menu.addAction(self.delete_folder_action)
+
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
         self._context_menu_project = None
@@ -370,6 +447,59 @@ class ExplorerPanel(QWidget):
 
         if self._context_menu_project is not None:
             self.remove_snapshot_requested.emit(self._context_menu_project)
+
+    def _request_new_folder(self):
+        # Show dialog to get folder name and delegate to FolderService via context if available
+        if self._context_menu_project is None:
+            return
+        try:
+            from PySide6.QtWidgets import QInputDialog
+            item = self.tree.currentItem()
+            section = item.data(0, Qt.UserRole + 1) if item else None
+            if section not in ("assets", "references", "notes", "renders", "exports"):
+                return
+            ok = False
+            name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+            if not ok or not name:
+                return
+            # map section key to top-level folder name used by AssetService
+            top = section.capitalize() if section != 'assets' else 'Assets'
+            parent_rel = top
+            # if user selected a deeper node (not implemented) we would append; for now create under top
+            if getattr(self, '_context', None) and getattr(self._context, 'folder_service', None):
+                try:
+                    self._context.folder_service.create_folder(self._context_menu_project, parent_rel, name)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _request_delete_folder(self):
+        # Prompt user for which folder (simple prompt) and delete via FolderService
+        if self._context_menu_project is None:
+            return
+        try:
+            from PySide6.QtWidgets import QInputDialog, QMessageBox
+            item = self.tree.currentItem()
+            section = item.data(0, Qt.UserRole + 1) if item else None
+            if section not in ("assets", "references", "notes", "renders", "exports"):
+                return
+            # ask for folder relative path under top
+            top = section.capitalize() if section != 'assets' else 'Assets'
+            folder, ok = QInputDialog.getText(self, "Delete Folder", f"Folder path to delete (relative to {top}):")
+            if not ok or not folder:
+                return
+            rel_path = str(Path(top) / folder)
+            if getattr(self, '_context', None) and getattr(self._context, 'folder_service', None):
+                confirm = QMessageBox.question(self, "Confirm Delete", f"Delete folder '{rel_path}' and all its contents?", QMessageBox.Yes | QMessageBox.No)
+                if confirm != QMessageBox.Yes:
+                    return
+                try:
+                    self._context.folder_service.delete_folder(self._context_menu_project, rel_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # ---------------------
     # Drag & Drop

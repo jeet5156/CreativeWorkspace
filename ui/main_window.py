@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 from PySide6.QtGui import QAction
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QByteArray
 
 from core.app_context import AppContext
 
@@ -35,6 +35,12 @@ class MainWindow(QMainWindow):
         self.create_statusbar()
 
         self.load_recent_projects()
+
+        # Attempt to restore last session before defaulting to Home
+        try:
+            self._restore_last_session()
+        except Exception:
+            pass
 
         # Show Home Workspace when no project is selected on startup
         if not self.context.current_project:
@@ -132,6 +138,11 @@ class MainWindow(QMainWindow):
                 # attach Explorer's search services (global search)
                 try:
                     self.explorer.set_search_services(self.workspace_manager.find_service, self.navigation_service, self.context.app_state)
+                    try:
+                        # provide folder/other services to explorer for folder operations
+                        self.explorer.set_context(self.context)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         except Exception:
@@ -272,6 +283,171 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.status.showMessage("Ready")
         self.setStatusBar(self.status)
+
+    def closeEvent(self, event):
+        """Persist last session info on exit."""
+        try:
+            session = {}
+            # current project path
+            try:
+                if self.context and self.context.current_project:
+                    session['project'] = str(self.context.current_project.location)
+                else:
+                    session['project'] = None
+            except Exception:
+                session['project'] = None
+            # active workspace
+            try:
+                if getattr(self, 'workspace', None) and getattr(self.workspace, '_current_section', None):
+                    session['workspace'] = self.workspace._current_section
+                else:
+                    session['workspace'] = 'home'
+            except Exception:
+                session['workspace'] = 'home'
+            # selected asset/reference
+            try:
+                session['selected_asset'] = getattr(self.context.app_state, 'current_asset', None)
+            except Exception:
+                session['selected_asset'] = None
+            try:
+                session['selected_reference'] = getattr(self.context.app_state, 'current_reference', None)
+            except Exception:
+                session['selected_reference'] = None
+            # explorer expansion state
+            try:
+                session['explorer'] = self.explorer.get_expansion_state()
+            except Exception:
+                session['explorer'] = {}
+            # window geometry
+            try:
+                geo = self.saveGeometry()
+                hex_geo = ''
+                try:
+                    hex_geo = geo.toHex().data().decode('ascii')
+                except Exception:
+                    try:
+                        hex_geo = bytes(geo).hex()
+                    except Exception:
+                        hex_geo = ''
+                session['window_geometry'] = hex_geo
+            except Exception:
+                session['window_geometry'] = None
+
+            try:
+                self.context.settings_service.save_last_session(session)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # continue with normal close
+        super().closeEvent(event)
+
+    def _restore_last_session(self):
+        """Restore last session from settings if available.
+
+        Restores window geometry, explorer expansion, current project, workspace, and selection.
+        Uses deterministic assets_loaded signal to restore asset selection without timers.
+        """
+        try:
+            last = self.context.settings_service.load_last_session()
+        except Exception:
+            last = {}
+        if not last:
+            return
+        # restore window geometry
+        try:
+            hex_geo = last.get('window_geometry')
+            if hex_geo:
+                try:
+                    ba = QByteArray.fromHex(bytes(hex_geo, 'ascii'))
+                    self.restoreGeometry(ba)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # restore explorer expansion
+        try:
+            exp = last.get('explorer', {})
+            if exp:
+                try:
+                    self.explorer.set_expansion_state(exp)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # restore project and workspace
+        proj_path = last.get('project')
+        workspace_key = last.get('workspace') or 'home'
+        selected_asset = last.get('selected_asset')
+        selected_reference = last.get('selected_reference')
+
+        if not proj_path:
+            # nothing to restore
+            return
+        try:
+            proj = self.context.project_service.load_project(proj_path)
+        except Exception:
+            proj = None
+        if not proj:
+            return
+
+        # attach deterministic selection handler if restoring an asset/ref in an asset-like workspace
+        need_asset_select = workspace_key in ('assets', 'references', 'renders', 'exports') and selected_asset
+        aw = getattr(self.workspace, 'asset_workspace', None)
+        if need_asset_select and aw is not None:
+            def _on_assets_loaded():
+                try:
+                    if selected_asset:
+                        aw.request_select_asset(selected_asset)
+                    elif selected_reference:
+                        aw.request_select_asset(selected_reference)
+                except Exception:
+                    pass
+                try:
+                    aw.assets_loaded.disconnect(_on_assets_loaded)
+                except Exception:
+                    pass
+            try:
+                if getattr(aw, '_assets_loaded', False):
+                    # already ready
+                    try:
+                        if selected_asset:
+                            aw.request_select_asset(selected_asset)
+                        elif selected_reference:
+                            aw.request_select_asset(selected_reference)
+                    except Exception:
+                        pass
+                else:
+                    aw.assets_loaded.connect(_on_assets_loaded)
+            except Exception:
+                pass
+
+        # navigate to project and workspace
+        try:
+            if workspace_key == 'home':
+                try:
+                    self.workspace.show_home()
+                except Exception:
+                    pass
+            else:
+                # map unknown to dashboard default
+                section = workspace_key or 'dashboard'
+                if self.navigation_service:
+                    try:
+                        self.navigation_service.navigate_project(proj, section)
+                    except Exception:
+                        # fallback to direct workspace call
+                        try:
+                            self.workspace.show_section(proj, section)
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        self.workspace.show_section(proj, section)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def load_recent_projects(self):
 

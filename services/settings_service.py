@@ -14,7 +14,8 @@ class SettingsService:
         if not self.settings_file.exists():
             self.save(
                 {
-                    "recent_projects": []
+                    "recent_projects": [],
+                    "last_session": {}
                 }
             )
 
@@ -71,4 +72,16 @@ class SettingsService:
     def set_splitter_state(self, hex_state: str):
         settings = self.load()
         settings["splitter_state"] = hex_state
+        self.save(settings)
+
+    # -------------------------
+    # Last session helpers
+    # -------------------------
+    def load_last_session(self):
+        settings = self.load()
+        return settings.get("last_session", {})
+
+    def save_last_session(self, session: dict):
+        settings = self.load()
+        settings["last_session"] = session or {}
         self.save(settings)

@@ -49,6 +49,15 @@ class NavigationService(QObject):
 
     def navigate_project(self, project, section: str = "dashboard"):
         try:
+            # set current project in context so app state updates
+            try:
+                if getattr(self, 'context', None):
+                    try:
+                        self.context.set_current_project(project)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             # Reveal in explorer without re-emitting signal to avoid loops
             try:
                 self.explorer.reveal_project(project, section, emit=False)

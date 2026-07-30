@@ -29,11 +29,14 @@ class AssetCard(QWidget):
         '.obj': '🧩',
     }
 
-    def __init__(self, asset: dict, size: QSize):
+    def __init__(self, asset: dict, size: QSize, thumbnail_service=None, project_location: str = None):
         super().__init__()
         self.asset = asset
         self._selected = False
         self.setFixedSize(size)
+        self._thumb_service = thumbnail_service
+        self._project_location = project_location
+        self._size = size
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -59,6 +62,13 @@ class AssetCard(QWidget):
         self.date_label.setStyleSheet("color:#888;font-size:11px;")
         layout.addWidget(self.date_label)
 
+        # connect to thumbnail ready signal so we can update when generation completes
+        try:
+            if self._thumb_service:
+                self._thumb_service.thumbnail_ready.connect(self._on_thumbnail_ready)
+        except Exception:
+            pass
+
         self._load_thumbnail()
 
     def _format_friendly_date(self, iso_str: str) -> str:
@@ -82,12 +92,38 @@ class AssetCard(QWidget):
     def _load_thumbnail(self):
         # Prefer absolute_path provided by AssetService
         abs_path_str = self.asset.get('absolute_path')
-        ext = Path(self.asset.get('relative_path','')).suffix.lower()
+        rel_path = self.asset.get('relative_path')
+        ext = Path(rel_path or '').suffix.lower()
         if abs_path_str:
             abs_path = Path(abs_path_str)
         else:
-            abs_path = Path.cwd() / self.asset.get('relative_path','')
+            # Prefer resolving relative paths against the project's canonical root if available.
+            if self._project_location:
+                abs_path = Path(self._project_location) / (rel_path or '')
+            else:
+                abs_path = Path(rel_path or '')
 
+        # Ask thumbnail service for cached thumbnail first
+        try:
+            if self._thumb_service and self._project_location:
+                cached = self._thumb_service.get_cached(self._project_location, rel_path, str(abs_path))
+                if cached:
+                    try:
+                        pix = QPixmap(cached)
+                        if not pix.isNull():
+                            self.thumb.setPixmap(pix.scaled(self.thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                            return
+                    except Exception:
+                        pass
+                # if not cached, request async generation and fall through to placeholder
+                try:
+                    self._thumb_service.generate_async(self._project_location, rel_path, str(abs_path), self._thumb_size_or_default(), self.asset.get('id'))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Fallback: image types may still be displayed directly (fast path) if available
         if ext in {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}:
             if abs_path.exists():
                 try:
@@ -97,12 +133,29 @@ class AssetCard(QWidget):
                         return
                 except Exception:
                     pass
-        # Non-image: show an icon if available, otherwise extension text
+
+        # Non-image: show an icon if available, otherwise extension text as placeholder
         icon = self.ICON_MAP.get(ext)
         if icon:
             self.thumb.setText(icon)
             return
         self.thumb.setText(ext.upper().lstrip('.') or 'FILE')
+
+    def _thumb_size_or_default(self):
+        try:
+            return self._size
+        except Exception:
+            return QSize(140, 160)
+
+    def _on_thumbnail_ready(self, asset_id: str, thumb_path: str):
+        try:
+            if asset_id != self.asset.get('id'):
+                return
+            pix = QPixmap(thumb_path)
+            if not pix.isNull():
+                self.thumb.setPixmap(pix.scaled(self.thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        except Exception:
+            pass
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

@@ -165,7 +165,9 @@ class AssetWorkspacePanel(QWidget):
         self._card_order = []
         for asset in assets:
             aid = asset['id']
-            card = AssetCard(asset, self.card_size)
+            # pass thumbnail service and project location so AssetCard can request thumbnails
+            thumb_svc = getattr(self._context, 'thumbnail_service', None)
+            card = AssetCard(asset, self.card_size, thumbnail_service=thumb_svc, project_location=getattr(self._project, 'location', None))
             card.clicked.connect(self._on_card_clicked)
             card.double_clicked.connect(self._on_card_double_clicked)
             card.context_requested.connect(self._on_card_context)

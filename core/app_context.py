@@ -20,10 +20,30 @@ class AppContext:
         self.app_state = AppState()
         self.activity_service = ActivityService()
 
+        # Thumbnail service (background generation & cache)
+        try:
+            from services.thumbnail_service import ThumbnailService
+            self.thumbnail_service = ThumbnailService(self.asset_service)
+        except Exception:
+            self.thumbnail_service = None
+
+        # Folder service: manages folders and updates indices/thumbnails
+        try:
+            from services.folder_service import FolderService
+            self.folder_service = FolderService(self.project_service, self.asset_service, activity_service=self.activity_service, thumbnail_service=self.thumbnail_service)
+        except Exception:
+            self.folder_service = None
+
         # AssetOperationsService handles file-level operations and coordinates updates
         try:
             from services.asset_operations_service import AssetOperationsService
-            self.asset_operations = AssetOperationsService(self.asset_service, self.activity_service, self.project_service, app_state=self.app_state)
+            self.asset_operations = AssetOperationsService(self.asset_service, self.activity_service, self.project_service, app_state=self.app_state, thumbnail_service=self.thumbnail_service)
+            # expose folder service through asset_operations for UI convenience
+            try:
+                if self.folder_service:
+                    self.asset_operations.folder_service = self.folder_service
+            except Exception:
+                pass
         except Exception:
             self.asset_operations = None
 

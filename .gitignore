@@ -21,4 +21,8 @@ workspace/
 config/
 
 # Generated cache
+<<<<<<< HEAD
 **/.creativeworkspace/
+=======
+**/.creativeworkspace/
+>>>>>>> 3ad3a52 (v0.1.0: Core workspace foundation)
