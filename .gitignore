@@ -1,6 +1,25 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
 .vscode/
 .idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User data (do not commit)
+workspace/
+config/activity.json
+config/settings.json
+
+# Thumbnail cache
+**/.creativeworkspace/
