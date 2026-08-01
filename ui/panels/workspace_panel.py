@@ -13,6 +13,8 @@ class WorkspacePanel(QWidget):
     import_finished = Signal(object)
     # Emitted when Home workspace becomes active (True) or deactivated (False)
     home_active = Signal(bool)
+    # Emitted when folder navigation is requested from grid (project, section, rel_path)
+    folder_navigation_requested = Signal(object, str, str)
 
     def __init__(self):
         super().__init__()
@@ -39,9 +41,15 @@ class WorkspacePanel(QWidget):
         self._current_project = None
         self._current_section = None
 
-        # forward asset selection
+        # forward asset selection & folder navigation
         try:
             self.asset_workspace.asset_selected.connect(self._on_asset_selected)
+        except Exception:
+            pass
+        try:
+            self.asset_workspace.folder_navigation_requested.connect(
+                lambda p, s, r: self.folder_navigation_requested.emit(p, s, r)
+            )
         except Exception:
             pass
 
@@ -84,7 +92,7 @@ class WorkspacePanel(QWidget):
         except Exception:
             pass
 
-    def show_section(self, project, section):
+    def show_section(self, project, section, rel_path=None):
         """Show dashboard when section is 'dashboard'; otherwise the workspace view for that section.
         Reset state when switching projects so dashboard is always shown for project root.
         """
@@ -123,7 +131,7 @@ class WorkspacePanel(QWidget):
             return
 
         # For assets/references/renders/exports show the asset workspace
-        self.asset_workspace.show_project_section(project, section, self._context)
+        self.asset_workspace.show_project_section(project, section, self._context, rel_path=rel_path)
         self.stack.setCurrentWidget(self.asset_workspace)
 
     def _on_assets_changed(self, project, category):
@@ -134,10 +142,11 @@ class WorkspacePanel(QWidget):
             return
         # Map category names to section keys: category stored as 'Assets' or 'References'
         section = self._current_section
-        # If no category filter or it matches current section, refresh
-        if category is None or category.lower() == section.lower() or (section == 'assets' and category == 'Assets'):
-            # refresh current view
-            self.show_section(self._current_project, self._current_section)
+        # If no category filter (None or empty string) or it matches current section, refresh
+        if not category or category.lower() == str(section).lower() or (section == 'assets' and category == 'Assets'):
+            # refresh current view preserving active relative path subfolder
+            active_rel = getattr(self.asset_workspace, '_current_rel_path', None)
+            self.show_section(self._current_project, self._current_section, rel_path=active_rel)
 
     # ---------------------
     # Drag & Drop on the workspace
@@ -168,8 +177,11 @@ class WorkspacePanel(QWidget):
 
         # Determine target section: use current section, default to assets
         section = self._current_section or 'assets'
+        target_rel = getattr(self.asset_workspace, '_current_rel_path', None)
 
-        report = self._context.asset_service.import_paths(self._current_project, section, paths)
+        report = self._context.asset_service.import_paths(
+            self._current_project, section, paths, target_rel_path=target_rel
+        )
 
         # emit finished report for main window to show messages
         try:

@@ -13,13 +13,24 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QCursor, QAction, QKeySequence, QShortcut
 from ui.widgets.asset_card import AssetCard
-from pathlib import Path
+from ui.widgets.folder_card import FolderCard
+from pathlib import Path, PurePosixPath
 import shutil
+
+
+SECTION_TO_FOLDER = {
+    "notes": "Notes",
+    "references": "References",
+    "assets": "Assets",
+    "renders": "Renders",
+    "exports": "Exports",
+}
 
 
 class AssetWorkspacePanel(QWidget):
     asset_selected = Signal(str)
     assets_loaded = Signal()
+    folder_navigation_requested = Signal(object, str, str)
 
     def clear(self):
         # remove all cards and reset title and selection state
@@ -33,10 +44,12 @@ class AssetWorkspacePanel(QWidget):
         self._last_selected_id = None
         self._pending_selection = None
         self._suppress_selection_emit = False
+        self._current_rel_path = None
         self.title.setText("Assets (0)")
-    """Displays a responsive, scrollable grid of asset cards for a project section.
-    The panel receives an AppContext via show_project_section and uses AssetService
-    to fetch metadata. UI actions invoke AssetService methods.
+
+    """Displays a responsive, scrollable grid of asset cards and folder cards for a project section.
+    The panel receives an AppContext via show_project_section and uses AssetService and FolderService
+    to fetch metadata and subfolders.
     """
 
     def __init__(self):
@@ -45,6 +58,7 @@ class AssetWorkspacePanel(QWidget):
         self._project = None
         self._section = None
         self._context = None
+        self._current_rel_path = None
 
         layout = QVBoxLayout(self)
 
@@ -78,10 +92,17 @@ class AssetWorkspacePanel(QWidget):
         except Exception:
             pass
 
-    def show_project_section(self, project, section, context):
+    def show_project_section(self, project, section, context=None, rel_path=None):
         self._project = project
         self._section = section
-        self._context = context
+        if context is not None:
+            self._context = context
+
+        root_folder = SECTION_TO_FOLDER.get(section, "Assets")
+        if rel_path:
+            self._current_rel_path = rel_path
+        else:
+            self._current_rel_path = root_folder
 
         # mark assets as not yet loaded and clear pending selection
         self._assets_loaded = False
@@ -89,61 +110,118 @@ class AssetWorkspacePanel(QWidget):
 
         self._load_assets()
 
+    def _is_asset_in_folder(self, asset: dict, target_rel_path: str) -> bool:
+        rel = (asset.get('relative_path') or '').replace('\\', '/').strip('/')
+        target = target_rel_path.replace('\\', '/').strip('/')
+        if not rel:
+            return False
+        parent = str(PurePosixPath(rel).parent)
+        if parent == '.':
+            parent = ''
+        return parent.lower() == target.lower()
+
+    def _on_folder_card_double_clicked(self, target_rel_path: str):
+        if self._project and self._section:
+            self.folder_navigation_requested.emit(self._project, self._section, target_rel_path)
+
+    def _on_folder_card_assets_dropped(self, mime_data, target_rel_path: str):
+        if not self._project or not self._context:
+            return
+        ops = getattr(self._context, 'asset_operations', None)
+        if ops:
+            try:
+                ops.move_assets_to_folder(self._project, mime_data, target_rel_path)
+            except Exception:
+                pass
+
     def _load_assets(self):
+        root_folder = SECTION_TO_FOLDER.get(self._section, "Assets")
+        if not self._current_rel_path:
+            self._current_rel_path = root_folder
+
         # ask service for metadata
-        assets = []
+        all_assets = []
         try:
             if self._context:
-                # map section to category name used in index
-                category = 'Assets' if self._section == 'assets' else self._section.capitalize()
-                assets = self._context.asset_service.get_assets(self._project, category)
+                category = SECTION_TO_FOLDER.get(self._section, 'Assets')
+                all_assets = self._context.asset_service.get_assets(self._project, category)
         except Exception:
-            assets = []
+            all_assets = []
 
-        # clear existing widgets: disconnect signals first to avoid re-entrancy when selections fire
-        try:
-            # disconnect known card signals
-            for card in list(self._cards.values()):
+        # clear existing widgets
+        for i in reversed(range(self.grid.count())):
+            widget = self.grid.itemAt(i).widget()
+            if widget:
                 try:
-                    card.clicked.disconnect(self._on_card_clicked)
+                    widget.setParent(None)
                 except Exception:
                     pass
-                try:
-                    card.double_clicked.disconnect(self._on_card_double_clicked)
-                except Exception:
-                    pass
-                try:
-                    card.context_requested.disconnect(self._on_card_context)
-                except Exception:
-                    pass
-                try:
-                    card.setParent(None)
-                except Exception:
-                    pass
-        except Exception:
-            # fallback: remove widgets from grid
-            for i in reversed(range(self.grid.count())):
-                widget = self.grid.itemAt(i).widget()
-                if widget:
+
+        self._cards.clear()
+        folder_cards = []
+
+        # Build parent navigation card ".." if currently inside a subfolder
+        curr_p = PurePosixPath(self._current_rel_path.replace('\\', '/'))
+        root_p = PurePosixPath(root_folder.replace('\\', '/'))
+
+        if curr_p != root_p and len(curr_p.parts) > len(root_p.parts):
+            parent_rel_path = str(curr_p.parent)
+            parent_card = FolderCard(
+                folder_name="..",
+                rel_path=parent_rel_path,
+                size=self.card_size,
+                is_parent_nav=True,
+            )
+            parent_card.double_clicked.connect(self._on_folder_card_double_clicked)
+            parent_card.assets_dropped.connect(self._on_folder_card_assets_dropped)
+            folder_cards.append(parent_card)
+
+        # Build subfolder cards from FolderService
+        folder_service = getattr(self._context, 'folder_service', None) if self._context else None
+        if folder_service and self._project:
+            try:
+                subfolders = folder_service.list_subfolders(self._project, self._current_rel_path)
+                for fname in subfolders:
+                    sub_rel_path = f"{self._current_rel_path.rstrip('/')}/{fname}"
+                    # Count items in subfolder
+                    sub_count = 0
                     try:
-                        widget.setParent(None)
+                        sub_subs = folder_service.list_subfolders(self._project, sub_rel_path)
+                        sub_count += len(sub_subs)
+                    except Exception:
+                        pass
+                    try:
+                        sub_assets = [a for a in all_assets if self._is_asset_in_folder(a, sub_rel_path)]
+                        sub_count += len(sub_assets)
                     except Exception:
                         pass
 
-        self._cards.clear()
+                    fcard = FolderCard(
+                        folder_name=fname,
+                        rel_path=sub_rel_path,
+                        size=self.card_size,
+                        is_parent_nav=False,
+                        item_count=sub_count,
+                    )
+                    fcard.double_clicked.connect(self._on_folder_card_double_clicked)
+                    fcard.assets_dropped.connect(self._on_folder_card_assets_dropped)
+                    folder_cards.append(fcard)
+            except Exception:
+                pass
 
-        if not assets:
-            lbl = QLabel("No assets yet\nDrag & Drop files here\nor Import Assets...")
+        # Filter assets for current folder level
+        folder_assets = [a for a in all_assets if self._is_asset_in_folder(a, self._current_rel_path)]
+
+        if not folder_cards and not folder_assets:
+            lbl = QLabel("No assets or subfolders yet\nDrag & Drop files here\nor Import Assets...")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet('color:#666;font-size:14px;')
             self.grid.addWidget(lbl, 0, 0)
-            # assets loaded (empty)
             self._assets_loaded = True
             try:
                 self.assets_loaded.emit()
             except Exception:
                 pass
-            # handle pending selection if any
             if self._pending_selection:
                 try:
                     self.select_asset(self._pending_selection)
@@ -152,9 +230,10 @@ class AssetWorkspacePanel(QWidget):
                 self._pending_selection = None
             return
 
-        # Update title with asset count
-        category_name = 'Assets' if self._section == 'assets' else self._section.capitalize()
-        self.title.setText(f"{category_name} ({len(assets)})")
+        # Update title with current location and item count
+        rel_display = self._current_rel_path.replace('\\', '/')
+        total_items = len(folder_cards) + len(folder_assets)
+        self.title.setText(f"{rel_display} ({total_items})")
 
         # Create card widgets with responsive columns
         avail_width = self.scroll.viewport().width() if self.scroll and self.scroll.viewport() else self.width()
@@ -163,9 +242,18 @@ class AssetWorkspacePanel(QWidget):
         row = 0
         col = 0
         self._card_order = []
-        for asset in assets:
+
+        # 1. Place folder cards
+        for fcard in folder_cards:
+            self.grid.addWidget(fcard, row, col)
+            col += 1
+            if col >= columns:
+                col = 0
+                row += 1
+
+        # 2. Place asset cards
+        for asset in folder_assets:
             aid = asset['id']
-            # pass thumbnail service and project location so AssetCard can request thumbnails
             thumb_svc = getattr(self._context, 'thumbnail_service', None)
             card = AssetCard(asset, self.card_size, thumbnail_service=thumb_svc, project_location=getattr(self._project, 'location', None))
             card.clicked.connect(self._on_card_clicked)
@@ -186,7 +274,6 @@ class AssetWorkspacePanel(QWidget):
             self.assets_loaded.emit()
         except Exception:
             pass
-        # if a pending selection was requested before load completed, perform it now
         if self._pending_selection:
             try:
                 self.request_select_asset(self._pending_selection)

@@ -110,12 +110,25 @@ class AssetService(QObject):
     # -----------------
     # Public API
     # -----------------
-    def get_assets(self, project, category: str | None = None):
-        """Return list of asset metadata dicts for a project. If category is set, filter by it."""
+    def get_assets(self, project, category: str | None = None, relative_path: str | None = None):
+        """Return list of asset metadata dicts for a project. 
+        If category is set, filter by category.
+        If relative_path is set, filter by assets residing directly inside that directory.
+        """
         assets = self._ensure_index_loaded(project)
+        result = list(assets)
         if category:
-            return [a for a in assets if a.get("category") == category]
-        return list(assets)
+            result = [a for a in result if a.get("category") == category]
+        if relative_path:
+            target_dir = relative_path.replace("\\", "/").strip("/")
+            filtered = []
+            for a in result:
+                rp = a.get("relative_path", "")
+                parent_dir = rp.rsplit("/", 1)[0] if "/" in rp else ""
+                if parent_dir == target_dir:
+                    filtered.append(a)
+            result = filtered
+        return result
 
     def has_index(self, project) -> bool:
         """Return True if the asset index file exists for the given project."""
@@ -166,9 +179,11 @@ class AssetService(QObject):
             pass
         return True
 
-    def import_paths(self, project, section: str, paths: List[str]):
+    def import_paths(self, project, section: str, paths: List[str], target_rel_path: str | None = None):
         """
-        Import files/folders and update the index. Returns report dict same as before.
+        Import files/folders and update the index. Returns report dict.
+        If target_rel_path is provided (e.g. "Assets/Hero"), imports files directly into that directory
+        and bypasses extension-based routing.
         Emits assets_changed(project, section) when done.
         """
         imported = []
@@ -178,6 +193,8 @@ class AssetService(QObject):
         # Ensure index loaded
         self._ensure_index_loaded(project)
         assets = self._indices[project.location]
+
+        norm_target_rel = str(target_rel_path).replace("\\", "/").strip("/") if target_rel_path else None
 
         for p in paths:
             src = Path(p)
@@ -199,7 +216,10 @@ class AssetService(QObject):
                 for file in src.rglob("*"):
                     if not file.is_file():
                         continue
-                    dest_dir = self._determine_dest_dir(project, section, file)
+                    if norm_target_rel:
+                        dest_dir = Path(project.location) / norm_target_rel
+                    else:
+                        dest_dir = self._determine_dest_dir(project, section, file)
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     dest = dest_dir / file.name
                     res = self._copy_with_duplicate_handling(file, dest, imported, skipped)
@@ -207,12 +227,17 @@ class AssetService(QObject):
                         errors.append(f"Error copying {file}: {res}")
                     else:
                         if res:
-                            # add metadata entry
-                            entry = self._make_asset_entry(project, str(dest.resolve()), "Assets" if section == "assets" else section.capitalize())
+                            rel = str(dest.relative_to(Path(project.location))).replace('\\', '/')
+                            top = rel.split('/')[0] if '/' in rel else None
+                            cat = top.capitalize() if top else ("Assets" if section == "assets" else section.capitalize())
+                            entry = self._make_asset_entry(project, str(dest.resolve()), cat)
                             assets.append(entry)
 
             else:
-                dest_dir = self._determine_dest_dir(project, section, src)
+                if norm_target_rel:
+                    dest_dir = Path(project.location) / norm_target_rel
+                else:
+                    dest_dir = self._determine_dest_dir(project, section, src)
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 dest = dest_dir / src.name
                 res = self._copy_with_duplicate_handling(src, dest, imported, skipped)
@@ -220,7 +245,10 @@ class AssetService(QObject):
                     errors.append(f"Error copying {src}: {res}")
                 else:
                     if res:
-                        entry = self._make_asset_entry(project, str(dest.resolve()), "Assets" if section == "assets" else section.capitalize())
+                        rel = str(dest.relative_to(Path(project.location))).replace('\\', '/')
+                        top = rel.split('/')[0] if '/' in rel else None
+                        cat = top.capitalize() if top else ("Assets" if section == "assets" else section.capitalize())
+                        entry = self._make_asset_entry(project, str(dest.resolve()), cat)
                         assets.append(entry)
 
         # save index

@@ -1,7 +1,10 @@
 from pathlib import Path
 import shutil
 import os
-from PySide6.QtCore import QObject, QSize
+import json
+from PySide6.QtCore import QObject, QSize, QMimeData, QByteArray
+
+MIME_ASSETS = "application/x-creativeworkspace-assets"
 
 
 class AssetOperationsService(QObject):
@@ -14,6 +17,32 @@ class AssetOperationsService(QObject):
     - update AppState.current_asset when relevant
     - do NOT manipulate UI directly; emit/update via existing services
     """
+
+    MIME_ASSETS = MIME_ASSETS
+
+    @staticmethod
+    def create_asset_mime_data(project_location: str, asset_ids: list, source_rel_path: str, operation: str = "move", **extra) -> QMimeData:
+        payload = {
+            "source_project_location": project_location,
+            "source_rel_path": source_rel_path,
+            "asset_ids": asset_ids,
+            "operation": operation,
+        }
+        payload.update(extra)
+        data_bytes = json.dumps(payload).encode("utf-8")
+        mime_data = QMimeData()
+        mime_data.setData(MIME_ASSETS, QByteArray(data_bytes))
+        return mime_data
+
+    @staticmethod
+    def decode_asset_mime_data(mime_data: QMimeData) -> dict:
+        if not mime_data or not mime_data.hasFormat(MIME_ASSETS):
+            return {}
+        try:
+            raw_bytes = mime_data.data(MIME_ASSETS).data()
+            return json.loads(raw_bytes.decode("utf-8"))
+        except Exception:
+            return {}
 
     def __init__(self, asset_service, activity_service, project_service, app_state=None, thumbnail_service=None):
         super().__init__()
@@ -189,6 +218,110 @@ class AssetOperationsService(QObject):
             return True
         except Exception:
             return False
+
+    def move_assets_to_folder(self, project, mime_or_ids, target_rel_path: str) -> bool:
+        """Move one or more assets to a target subfolder relative path inside the project.
+        Accepts either a list of asset IDs or a QMimeData payload.
+        """
+        if isinstance(mime_or_ids, (list, tuple, set)):
+            asset_ids = list(mime_or_ids)
+            source_rel_path = None
+        elif hasattr(mime_or_ids, 'hasFormat'):
+            payload = self.decode_asset_mime_data(mime_or_ids)
+            if not payload:
+                return False
+            asset_ids = payload.get("asset_ids", [])
+            source_rel_path = payload.get("source_rel_path")
+        else:
+            return False
+
+        if not asset_ids or not target_rel_path:
+            return False
+
+        # No-op check: target folder is identical to source folder
+        norm_target = target_rel_path.replace('\\', '/').strip('/')
+        if source_rel_path and source_rel_path.replace('\\', '/').strip('/') == norm_target:
+            return True
+
+        target_dir = Path(project.location) / norm_target
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        moved_count = 0
+        for asset_id in asset_ids:
+            entry = self._get_entry(project, asset_id)
+            if not entry:
+                continue
+
+            old_rel = entry.get('relative_path') or ''
+            old_parent = str(Path(old_rel).parent).replace('\\', '/').strip('.')
+            if old_parent.lower() == norm_target.lower():
+                # Already in target folder -> no-op for this item
+                continue
+
+            src = Path(entry.get('absolute_path') or (Path(project.location) / old_rel))
+            if not src.exists():
+                continue
+
+            dest = target_dir / src.name
+            if dest.exists():
+                stem = dest.stem
+                suffix = dest.suffix
+                j = 1
+                while True:
+                    cand = target_dir / f"{stem}_{j}{suffix}"
+                    if not cand.exists():
+                        dest = cand
+                        break
+                    j += 1
+
+            shutil.move(str(src), str(dest))
+
+            # update index entry
+            assets = self.asset_service._ensure_index_loaded(project)
+            e = next((a for a in assets if a.get('id') == asset_id), None)
+            if e:
+                e['filename'] = dest.name
+                try:
+                    rel = str(dest.relative_to(Path(project.location))).replace('\\', '/')
+                except Exception:
+                    rel = str(dest)
+                e['relative_path'] = rel
+                e['absolute_path'] = str(dest)
+                # Derive category from top-level directory segment of destination relative path
+                top_folder = rel.split('/')[0] if '/' in rel else norm_target.split('/')[0]
+                e['category'] = top_folder
+                e['updated_at'] = __import__('datetime').datetime.now().isoformat()
+
+            # thumbnail invalidation & regeneration
+            try:
+                if getattr(self, 'thumbnail_service', None) and old_rel:
+                    try:
+                        self.thumbnail_service.invalidate(project.location, rel_path=old_rel)
+                    except Exception:
+                        pass
+                    if e:
+                        try:
+                            self.thumbnail_service.generate_async(project.location, e.get('relative_path'), e.get('absolute_path'), QSize(140, 160), asset_id)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            moved_count += 1
+
+        if moved_count > 0:
+            self.asset_service._save_index(project)
+            try:
+                self.activity_service.record('move_assets_to_folder', {'project': project.location, 'count': moved_count, 'target': norm_target})
+            except Exception:
+                pass
+            try:
+                self.asset_service.assets_changed.emit(project, None)
+            except Exception:
+                pass
+            return True
+
+        return False
 
     def reveal_in_explorer(self, project, asset_id):
         try:

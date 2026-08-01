@@ -23,6 +23,7 @@ class FolderService(QObject):
         self.asset_service = asset_service
         self.activity_service = activity_service
         self.thumbnail_service = thumbnail_service
+        self.IGNORE_FOLDERS = {".git", "__pycache__", ".creativeworkspace", ".DS_Store", "node_modules", ".venv", "venv", ".idea", ".vscode"}
 
     def _abs_from_rel(self, project, rel: str) -> Path:
         try:
@@ -52,6 +53,24 @@ class FolderService(QObject):
             return True
         except Exception:
             return False
+
+    def list_subfolders(self, project, relative_path: str) -> list:
+        """Return a list of folder names found inside the given relative path.
+        Filters out system/ignored folders.
+        """
+        try:
+            abs_dir = self._abs_from_rel(project, relative_path)
+            if not abs_dir.exists() or not abs_dir.is_dir():
+                return []
+            
+            subfolders = []
+            for item in abs_dir.iterdir():
+                if item.is_dir() and item.name not in self.IGNORE_FOLDERS:
+                    subfolders.append(item.name)
+            
+            return sorted(subfolders, key=str.lower)
+        except Exception:
+            return []
 
     def delete_folder(self, project, rel_path: str) -> bool:
         """Delete a folder and all contained assets. Updates index and invalidates thumbnails."""

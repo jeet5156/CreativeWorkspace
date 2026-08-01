@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QVBoxLayout,
     QSizePolicy,
+    QApplication,
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap
@@ -159,11 +160,44 @@ class AssetCard(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.pos()
             self.clicked.emit(self.asset.get('id'))
         else:
             # Let contextMenuEvent handle right-click/context menus to avoid menu dismissal when
             # selection logic triggers UI changes during mouse press.
             super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if not hasattr(self, '_drag_start_pos') or self._drag_start_pos is None:
+            return
+        if (event.pos() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        try:
+            from PySide6.QtGui import QDrag
+            from services.asset_operations_service import AssetOperationsService, MIME_ASSETS
+
+            rel_path = self.asset.get('relative_path') or ''
+            parent_dir = str(Path(rel_path).parent).replace('\\', '/')
+            if parent_dir == '.':
+                parent_dir = ''
+
+            drag = QDrag(self)
+            mime_data = AssetOperationsService.create_asset_mime_data(
+                project_location=self._project_location or '',
+                asset_ids=[self.asset.get('id')],
+                source_rel_path=parent_dir,
+                operation="move",
+            )
+            drag.setMimeData(mime_data)
+
+            pixmap = self.grab()
+            drag.setPixmap(pixmap.scaled(70, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            drag.exec_(Qt.MoveAction)
+        except Exception:
+            pass
 
     def contextMenuEvent(self, event):
         """Emit context_requested when the OS/context menu is requested. This ensures

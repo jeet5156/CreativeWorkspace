@@ -38,10 +38,12 @@ class WorkspaceManager:
 
     def set_navigation_service(self, navigation_service):
         self.navigation_service = navigation_service
-        # nothing to create here for search — Explorer uses WorkspaceManager.find_service directly
         try:
-            # record navigation service reference for modules that need it
-            self.navigation_service = navigation_service
+            if hasattr(self.workspace, 'folder_navigation_requested'):
+                self.workspace.folder_navigation_requested.connect(
+                    lambda p, s, r: self.navigation_service.navigate_project(p, s, rel_path=r)
+                    if self.navigation_service else None
+                )
         except Exception:
             pass
 
@@ -68,16 +70,10 @@ class WorkspaceManager:
         except Exception:
             pass
 
-    def show_home(self):
-        try:
-            self.workspace.show_home()
-        except Exception:
-            pass
-
-    def show_project(self, project, section="dashboard"):
+    def show_project(self, project, section="dashboard", rel_path=None):
         try:
             # keep existing workspace logic
-            self.workspace.show_section(project, section)
+            self.workspace.show_section(project, section, rel_path=rel_path)
         except Exception:
             pass
 

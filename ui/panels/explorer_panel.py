@@ -13,16 +13,25 @@ from models.project import Project
 from pathlib import Path
 
 
+# Named roles for QTreeWidgetItems to avoid magic numbers
+ROLE_PROJECT = Qt.UserRole
+ROLE_SECTION = Qt.UserRole + 1
+ROLE_REL_PATH = Qt.UserRole + 2
+ROLE_NODE_TYPE = Qt.UserRole + 3
+
+
 class ExplorerPanel(QWidget):
 
-    # Emits: (project, section)
-    project_selected = Signal(Project, str)
+    # Emits: (project, section, rel_path)
+    project_selected = Signal(Project, str, object)
     # Navigation signal for top-level modules: emits a string key such as 'home', 'clients', 'assets_lib', 'knowledge', 'business'
     navigation_requested = Signal(str)
     set_snapshot_requested = Signal(Project)
     remove_snapshot_requested = Signal(Project)
-    # Emits: (project, section, [paths]) when files/folders are dropped
+    # Emits: (project, section, [paths]) when files/folders are dropped from OS
     files_dropped = Signal(Project, str, object)
+    # Emits: (project, mime_data, target_rel_path) when internal assets are dropped onto a category or folder node
+    internal_assets_dropped = Signal(object, object, str)
 
     def __init__(self):
         super().__init__()
@@ -43,6 +52,11 @@ class ExplorerPanel(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.on_context_menu)
+        try:
+            self.tree.setDropIndicatorShown(True)
+            self.tree.setAutoExpandDelay(750)
+        except Exception:
+            pass
 
         layout.addWidget(self.tree)
 
@@ -97,26 +111,42 @@ class ExplorerPanel(QWidget):
         self.tree.addTopLevelItem(self.business_root)
 
         self.tree.itemClicked.connect(self.on_item_clicked)
+        self.tree.itemExpanded.connect(self._on_item_expanded)
 
         # expose navigation_requested when clicking top-level nodes
 
         # Enable drag & drop
         self.setAcceptDrops(True)
+        self._project_items = {}
 
     def set_context(self, context):
         """Provide AppContext to Explorer so it can perform folder operations."""
         try:
             self._context = context
+            if context and getattr(context, 'asset_service', None):
+                if not getattr(self, '_assets_changed_connected', False):
+                    try:
+                        context.asset_service.assets_changed.connect(self._on_assets_changed)
+                        self._assets_changed_connected = True
+                    except Exception:
+                        pass
         except Exception:
             self._context = None
+
+    def _get_folder_service(self):
+        context = getattr(self, "_context", None)
+        return getattr(context, "folder_service", None) if context else None
 
     def add_project(self, project: Project):
 
         project_item = QTreeWidgetItem([f"📁 {project.name}"])
-        project_item.setData(0, Qt.UserRole, project)
-        project_item.setData(0, Qt.UserRole + 1, "dashboard")
+        project_item.setData(0, ROLE_PROJECT, project)
+        project_item.setData(0, ROLE_SECTION, "dashboard")
+        project_item.setData(0, ROLE_NODE_TYPE, "project")
 
         self.projects_root.addChild(project_item)
+        if hasattr(project, 'location') and project.location:
+            self._project_items[str(project.location)] = project_item
 
         sections = [
             ("📝 Notes", "notes"),
@@ -126,16 +156,167 @@ class ExplorerPanel(QWidget):
             ("📤 Exports", "exports"),
         ]
 
+        folder_service = self._get_folder_service()
+
         for title, section in sections:
             child = QTreeWidgetItem([title])
-            child.setData(0, Qt.UserRole, project)
-            child.setData(0, Qt.UserRole + 1, section)
+            child.setData(0, ROLE_PROJECT, project)
+            child.setData(0, ROLE_SECTION, section)
+            
+            # Map section to top-level folder name
+            top_folder = section.capitalize() if section != "assets" else "Assets"
+            child.setData(0, ROLE_REL_PATH, top_folder)
+            child.setData(0, ROLE_NODE_TYPE, "category")
+            
+            # Show expansion indicator if folder service confirms subfolders exist
+            has_subfolders = False
+            if folder_service:
+                try:
+                    has_subfolders = bool(folder_service.list_subfolders(project, top_folder))
+                except Exception:
+                    has_subfolders = False
+            
+            if has_subfolders:
+                child.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+            else:
+                child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+            
             project_item.addChild(child)
 
         project_item.setExpanded(True)
 
     def clear_projects(self):
         self.projects_root.takeChildren()
+        if hasattr(self, '_project_items'):
+            self._project_items.clear()
+
+    def _on_item_expanded(self, item: QTreeWidgetItem):
+        """Lazy load and refresh subfolders from FolderService when a category or folder node is expanded."""
+        node_type = item.data(0, ROLE_NODE_TYPE)
+        if node_type not in ("category", "folder"):
+            return
+
+        project = item.data(0, ROLE_PROJECT)
+        rel_path = item.data(0, ROLE_REL_PATH)
+        section = item.data(0, ROLE_SECTION)
+
+        if not project or not rel_path:
+            return
+
+        folder_service = self._get_folder_service()
+        if not folder_service:
+            return
+
+        # Fetch fresh subfolders from service
+        subfolders = folder_service.list_subfolders(project, rel_path)
+        
+        # Update parent indicator policy based on whether subfolders exist
+        if subfolders:
+            item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+        else:
+            item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+
+        # Clear existing children to rebuild only this expanded node
+        item.takeChildren()
+
+        for folder_name in subfolders:
+            folder_rel_path = str(Path(rel_path) / folder_name).replace("\\", "/")
+            
+            child = QTreeWidgetItem([f"📁 {folder_name}"])
+            child.setData(0, ROLE_PROJECT, project)
+            child.setData(0, ROLE_SECTION, section)
+            child.setData(0, ROLE_REL_PATH, folder_rel_path)
+            child.setData(0, ROLE_NODE_TYPE, "folder")
+            
+            # Show expansion indicator for child folder if it contains subfolders
+            child_has_subfolders = bool(folder_service.list_subfolders(project, folder_rel_path))
+            if child_has_subfolders:
+                child.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+            else:
+                child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+
+            item.addChild(child)
+
+    def _on_assets_changed(self, project, category=None):
+        if not project or not hasattr(self, '_project_items'):
+            return
+        loc_str = str(getattr(project, 'location', ''))
+        proj_item = self._project_items.get(loc_str)
+        if not proj_item or not proj_item.isExpanded():
+            return
+
+        for i in range(proj_item.childCount()):
+            cat_item = proj_item.child(i)
+            if cat_item.isExpanded():
+                self._refresh_expanded_node(cat_item)
+
+    def _find_node_by_rel_path(self, parent_item: QTreeWidgetItem, target_rel_path: str) -> QTreeWidgetItem | None:
+        if not parent_item or not target_rel_path:
+            return None
+        norm_target = target_rel_path.replace('\\', '/').strip('/')
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            rp = child.data(0, ROLE_REL_PATH)
+            if rp and rp.replace('\\', '/').strip('/') == norm_target:
+                return child
+            sub = self._find_node_by_rel_path(child, target_rel_path)
+            if sub:
+                return sub
+        return None
+
+    def _ensure_path_expanded(self, proj_item: QTreeWidgetItem, rel_path: str):
+        if not rel_path:
+            return
+        parts = rel_path.replace('\\', '/').strip('/').split('/')
+        current_parent = proj_item
+        accumulated = ""
+        for part in parts:
+            accumulated = f"{accumulated}/{part}" if accumulated else part
+            self._on_item_expanded(current_parent)
+            current_parent.setExpanded(True)
+            found = None
+            for i in range(current_parent.childCount()):
+                child = current_parent.child(i)
+                rp = child.data(0, ROLE_REL_PATH)
+                if rp and rp.replace('\\', '/').strip('/') == accumulated.replace('\\', '/').strip('/'):
+                    found = child
+                    break
+            if found:
+                current_parent = found
+            else:
+                break
+
+    def _refresh_expanded_node(self, item: QTreeWidgetItem):
+        if not item:
+            return
+
+        expanded_paths = set()
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.isExpanded():
+                rp = child.data(0, ROLE_REL_PATH)
+                if rp:
+                    expanded_paths.add(rp)
+
+        current_item = self.tree.currentItem()
+        current_rp = current_item.data(0, ROLE_REL_PATH) if current_item else None
+
+        self._on_item_expanded(item)
+
+        for i in range(item.childCount()):
+            child = item.child(i)
+            rp = child.data(0, ROLE_REL_PATH)
+            if rp and rp in expanded_paths:
+                child.setExpanded(True)
+                self._refresh_expanded_node(child)
+
+        if current_rp:
+            matched = self._find_node_by_rel_path(item, current_rp)
+            if matched:
+                try:
+                    self.tree.setCurrentItem(matched)
+                except Exception:
+                    pass
 
     def load_projects(self, projects):
 
@@ -146,28 +327,40 @@ class ExplorerPanel(QWidget):
 
         self.projects_root.setExpanded(True)
 
-    def reveal_project(self, project, section: str = "dashboard", emit: bool = True):
-        """Programmatically select and reveal a project in the tree.
-        If emit is True (default), emits project_selected(project, section) so app reacts as if clicked.
+    def reveal_project(self, project, section: str = "dashboard", rel_path: str = None, emit: bool = True):
+        """Programmatically select and reveal a project or specific subfolder in the tree.
+        If rel_path is supplied, recursively locates matching node by ROLE_REL_PATH and selects it.
+        If emit is True (default), emits project_selected(project, section, rel_path).
         """
-        # Find matching project item under projects_root
         for i in range(self.projects_root.childCount()):
-            item = self.projects_root.child(i)
-            p = item.data(0, Qt.UserRole)
+            proj_item = self.projects_root.child(i)
+            p = proj_item.data(0, Qt.UserRole)
             try:
                 if p and str(p.location) == str(project.location):
-                    # select and ensure visible
-                    self.tree.setCurrentItem(item)
-                    item.setExpanded(True)
-                    # hide search results when revealing
+                    proj_item.setExpanded(True)
+                    target_node = None
+
+                    if rel_path:
+                        self._ensure_path_expanded(proj_item, rel_path)
+                        target_node = self._find_node_by_rel_path(proj_item, rel_path)
+
+                    if target_node:
+                        curr = target_node.parent()
+                        while curr:
+                            curr.setExpanded(True)
+                            curr = curr.parent()
+                        self.tree.setCurrentItem(target_node)
+                    else:
+                        self.tree.setCurrentItem(proj_item)
+
                     try:
                         self.search_results.setVisible(False)
                     except Exception:
                         pass
-                    # emit selection with given section
+
                     if emit:
                         try:
-                            self.project_selected.emit(project, section)
+                            self.project_selected.emit(project, section, rel_path if target_node else None)
                         except Exception:
                             pass
                     return
@@ -410,33 +603,44 @@ class ExplorerPanel(QWidget):
         self.new_folder_action = QAction("New Folder...", self)
         self.new_folder_action.triggered.connect(self._request_new_folder)
 
+        self.rename_folder_action = QAction("Rename Folder...", self)
+        self.rename_folder_action.triggered.connect(self._request_rename_folder)
+
         self.delete_folder_action = QAction("Delete Folder...", self)
         self.delete_folder_action.triggered.connect(self._request_delete_folder)
+
+    def _get_active_context_item(self) -> QTreeWidgetItem | None:
+        return getattr(self, '_context_menu_item', None) or self.tree.currentItem()
 
     def on_context_menu(self, position):
 
         item = self.tree.itemAt(position)
         project = item.data(0, Qt.UserRole) if item else None
         section = item.data(0, Qt.UserRole + 1) if item else None
+        node_type = item.data(0, ROLE_NODE_TYPE) if item else None
 
         if not isinstance(project, Project):
             return
 
         self._context_menu_project = project
+        self._context_menu_item = item
 
         menu = QMenu(self)
         menu.addAction(self.set_snapshot_action)
         menu.addAction(self.remove_snapshot_action)
 
-        # If the clicked item is a project section (assets/references/notes/renders/exports) offer folder actions
+        # If the clicked item is a project section offer folder actions
         if section in ("assets", "references", "notes", "renders", "exports"):
             menu.addSeparator()
             menu.addAction(self.new_folder_action)
+            if node_type == "folder":
+                menu.addAction(self.rename_folder_action)
             menu.addAction(self.delete_folder_action)
 
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
         self._context_menu_project = None
+        self._context_menu_item = None
 
     def _request_set_snapshot(self):
 
@@ -454,23 +658,56 @@ class ExplorerPanel(QWidget):
             return
         try:
             from PySide6.QtWidgets import QInputDialog
-            item = self.tree.currentItem()
-            section = item.data(0, Qt.UserRole + 1) if item else None
+            item = self._get_active_context_item()
+            section = item.data(0, ROLE_SECTION) if item else None
             if section not in ("assets", "references", "notes", "renders", "exports"):
                 return
             ok = False
             name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
             if not ok or not name:
                 return
-            # map section key to top-level folder name used by AssetService
+            # Map section key to top-level folder name used by AssetService
             top = section.capitalize() if section != 'assets' else 'Assets'
-            parent_rel = top
-            # if user selected a deeper node (not implemented) we would append; for now create under top
+            rel_path = item.data(0, ROLE_REL_PATH) if item else None
+            parent_rel = rel_path if rel_path else top
             if getattr(self, '_context', None) and getattr(self._context, 'folder_service', None):
                 try:
                     self._context.folder_service.create_folder(self._context_menu_project, parent_rel, name)
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    def _request_rename_folder(self):
+        if self._context_menu_project is None:
+            return
+        try:
+            from PySide6.QtWidgets import QInputDialog, QMessageBox
+            item = self._get_active_context_item()
+            if not item:
+                return
+            node_type = item.data(0, ROLE_NODE_TYPE)
+            old_rel_path = item.data(0, ROLE_REL_PATH)
+            section = item.data(0, ROLE_SECTION)
+            if node_type != "folder" or not old_rel_path:
+                return
+
+            old_name = Path(old_rel_path).name
+            new_name, ok = QInputDialog.getText(self, "Rename Folder", f"New name for '{old_name}':", text=old_name)
+            if not ok or not new_name or new_name == old_name:
+                return
+
+            folder_service = self._get_folder_service()
+            if folder_service:
+                res = folder_service.rename_folder(self._context_menu_project, old_rel_path, new_name)
+                if res:
+                    new_rel_path = str(Path(old_rel_path).parent / new_name).replace('\\', '/')
+                    try:
+                        self.reveal_project(self._context_menu_project, section, rel_path=new_rel_path, emit=True)
+                    except Exception:
+                        pass
+                else:
+                    QMessageBox.warning(self, "Rename Folder", f"Unable to rename folder '{old_name}'.")
         except Exception:
             pass
 
@@ -480,22 +717,28 @@ class ExplorerPanel(QWidget):
             return
         try:
             from PySide6.QtWidgets import QInputDialog, QMessageBox
-            item = self.tree.currentItem()
-            section = item.data(0, Qt.UserRole + 1) if item else None
+            item = self._get_active_context_item()
+            section = item.data(0, ROLE_SECTION) if item else None
             if section not in ("assets", "references", "notes", "renders", "exports"):
                 return
-            # ask for folder relative path under top
             top = section.capitalize() if section != 'assets' else 'Assets'
-            folder, ok = QInputDialog.getText(self, "Delete Folder", f"Folder path to delete (relative to {top}):")
-            if not ok or not folder:
-                return
-            rel_path = str(Path(top) / folder)
+            rel_path = item.data(0, ROLE_REL_PATH) if item else None
+            node_type = item.data(0, ROLE_NODE_TYPE) if item else None
+
+            if node_type == "folder" and rel_path:
+                target_delete_rel = rel_path
+            else:
+                folder, ok = QInputDialog.getText(self, "Delete Folder", f"Folder path to delete (relative to {top}):")
+                if not ok or not folder:
+                    return
+                target_delete_rel = str(Path(top) / folder)
+
             if getattr(self, '_context', None) and getattr(self._context, 'folder_service', None):
-                confirm = QMessageBox.question(self, "Confirm Delete", f"Delete folder '{rel_path}' and all its contents?", QMessageBox.Yes | QMessageBox.No)
+                confirm = QMessageBox.question(self, "Confirm Delete", f"Delete folder '{target_delete_rel}' and all its contents?", QMessageBox.Yes | QMessageBox.No)
                 if confirm != QMessageBox.Yes:
                     return
                 try:
-                    self._context.folder_service.delete_folder(self._context_menu_project, rel_path)
+                    self._context.folder_service.delete_folder(self._context_menu_project, target_delete_rel)
                 except Exception:
                     pass
         except Exception:
@@ -505,54 +748,109 @@ class ExplorerPanel(QWidget):
     # Drag & Drop
     # ---------------------
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
+        try:
+            from services.asset_operations_service import MIME_ASSETS
+            mime = event.mimeData()
+            if mime.hasFormat(MIME_ASSETS) or mime.hasUrls():
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+        except Exception:
             event.ignore()
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
+        try:
+            from services.asset_operations_service import MIME_ASSETS
+            mime = event.mimeData()
+            if mime.hasFormat(MIME_ASSETS):
+                try:
+                    tree_pos = self.tree.viewport().mapFrom(self, event.pos().toPoint())
+                except Exception:
+                    tree_pos = self.tree.viewport().mapFrom(self, event.pos())
+
+                item = self.tree.itemAt(tree_pos)
+                if item:
+                    node_type = item.data(0, ROLE_NODE_TYPE)
+                    rel_path = item.data(0, ROLE_REL_PATH)
+                    project = item.data(0, ROLE_PROJECT)
+                    if node_type in ("category", "folder") and rel_path and project:
+                        event.acceptProposedAction()
+                        return
+                event.ignore()
+            elif mime.hasUrls():
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+        except Exception:
             event.ignore()
 
     def dropEvent(self, event):
-        # Gather local file paths
-        urls = event.mimeData().urls()
-        paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
-
-        if not paths:
-            event.ignore()
-            return
-
-        # Determine drop target (project + section)
         try:
-            tree_pos = self.tree.viewport().mapFrom(self, event.pos().toPoint())
+            from services.asset_operations_service import MIME_ASSETS
+            mime = event.mimeData()
+
+            # Internal asset drop from Asset Workspace
+            if mime.hasFormat(MIME_ASSETS):
+                try:
+                    tree_pos = self.tree.viewport().mapFrom(self, event.pos().toPoint())
+                except Exception:
+                    tree_pos = self.tree.viewport().mapFrom(self, event.pos())
+
+                item = self.tree.itemAt(tree_pos)
+                if not item:
+                    event.ignore()
+                    return
+
+                node_type = item.data(0, ROLE_NODE_TYPE)
+                rel_path = item.data(0, ROLE_REL_PATH)
+                project = item.data(0, ROLE_PROJECT)
+
+                if node_type in ("category", "folder") and rel_path and project:
+                    event.acceptProposedAction()
+                    self.internal_assets_dropped.emit(project, mime, rel_path)
+                else:
+                    event.ignore()
+                return
+
+            # External file drop from OS
+            if mime.hasUrls():
+                urls = mime.urls()
+                paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+
+                if not paths:
+                    event.ignore()
+                    return
+
+                try:
+                    tree_pos = self.tree.viewport().mapFrom(self, event.pos().toPoint())
+                except Exception:
+                    tree_pos = self.tree.viewport().mapFrom(self, event.pos())
+
+                item = self.tree.itemAt(tree_pos)
+
+                project = item.data(0, Qt.UserRole) if item else None
+                section = item.data(0, Qt.UserRole + 1) if item else None
+
+                if section not in ("assets", "references", "notes", "renders", "exports"):
+                    section = "assets"
+
+                self.files_dropped.emit(project, section, paths)
+                event.acceptProposedAction()
+                return
+
+            event.ignore()
         except Exception:
-            tree_pos = self.tree.viewport().mapFrom(self, event.pos())
-
-        item = self.tree.itemAt(tree_pos)
-
-        project = item.data(0, Qt.UserRole) if item else None
-        section = item.data(0, Qt.UserRole + 1) if item else None
-
-        # Default to assets if no specific section
-        if section not in ("assets", "references", "notes", "renders", "exports"):
-            section = "assets"
-
-        # Emit to application to let services handle business logic
-        self.files_dropped.emit(project, section, paths)
-
-        event.acceptProposedAction()
+            event.ignore()
 
     # ---------------------
     def on_item_clicked(self, item, column):
 
-        project = item.data(0, Qt.UserRole)
-        section = item.data(0, Qt.UserRole + 1)
+        project = item.data(0, ROLE_PROJECT)
+        section = item.data(0, ROLE_SECTION)
+        rel_path = item.data(0, ROLE_REL_PATH)
 
         if isinstance(project, Project):
-            self.project_selected.emit(project, section)
+            self.project_selected.emit(project, section, rel_path)
             return
 
         # If the clicked entry is a top-level navigation (home, clients, assets_lib, knowledge, business),

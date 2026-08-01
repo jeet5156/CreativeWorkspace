@@ -17,6 +17,19 @@ class NavigationService(QObject):
         self.explorer = explorer
         self.context = context
 
+        if self.explorer:
+            try:
+                self.explorer.internal_assets_dropped.connect(self._on_internal_assets_dropped)
+            except Exception:
+                pass
+
+    def _on_internal_assets_dropped(self, project, mime_data, target_rel_path: str):
+        try:
+            if self.context and getattr(self.context, 'asset_operations', None):
+                self.context.asset_operations.move_assets_to_folder(project, mime_data, target_rel_path)
+        except Exception:
+            pass
+
     # Public API
     def handle_navigation(self, key: str):
         if key == "home":
@@ -47,7 +60,7 @@ class NavigationService(QObject):
         except Exception:
             pass
 
-    def navigate_project(self, project, section: str = "dashboard"):
+    def navigate_project(self, project, section: str = "dashboard", rel_path: str = None):
         try:
             # set current project in context so app state updates
             try:
@@ -60,12 +73,12 @@ class NavigationService(QObject):
                 pass
             # Reveal in explorer without re-emitting signal to avoid loops
             try:
-                self.explorer.reveal_project(project, section, emit=False)
+                self.explorer.reveal_project(project, section, rel_path=rel_path, emit=False)
             except Exception:
                 pass
             # show project in workspace
             try:
-                self.workspace_manager.show_project(project, section)
+                self.workspace_manager.show_project(project, section, rel_path=rel_path)
             except Exception:
                 pass
             self.navigate_to_project.emit(project, section)

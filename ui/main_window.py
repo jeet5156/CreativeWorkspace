@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         try:
             if self.navigation_service:
                 self.explorer.navigation_requested.connect(self.navigation_service.handle_navigation)
-                self.explorer.project_selected.connect(lambda p, s: self.navigation_service.navigate_project(p, s))
+                self.explorer.project_selected.connect(lambda p, s, r=None: self.navigation_service.navigate_project(p, s, rel_path=r))
                 # attach Explorer's search services (global search)
                 try:
                     self.explorer.set_search_services(self.workspace_manager.find_service, self.navigation_service, self.context.app_state)
@@ -465,7 +465,7 @@ class MainWindow(QMainWindow):
             self.context.project_service.all_projects()
         )
 
-    def project_selected(self, project, section):
+    def project_selected(self, project, section, rel_path=None):
 
         self.context.set_current_project(project)
 
@@ -478,7 +478,7 @@ class MainWindow(QMainWindow):
             pass
 
         # Delegate to workspace to display the appropriate view
-        self.workspace.show_section(project, section)
+        self.workspace.show_section(project, section, rel_path=rel_path)
 
 
     def new_project(self):

@@ -48,6 +48,14 @@ class InspectorPanel(QWidget):
         form.addRow("Tags:", self.tags)
         form.addRow("Notes:", self.notes)
 
+        # Enable word wrapping for value labels to keep Inspector width stable
+        for label in (self.filename, self.type, self.category, self.size, self.date_added, self.path, self.tags, self.notes):
+            label.setWordWrap(True)
+
+        # Enable mouse text selection for filename and path fields for easy copying
+        self.filename.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
         self._form_layout = form
         layout.addLayout(form)
 
