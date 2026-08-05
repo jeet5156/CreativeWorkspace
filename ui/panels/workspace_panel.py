@@ -130,6 +130,14 @@ class WorkspacePanel(QWidget):
             self.stack.setCurrentWidget(self.notes)
             return
 
+        if section == "lab":
+            if getattr(self, "_context", None) and getattr(self._context, "workspace_manager", None):
+                wm = self._context.workspace_manager
+                if getattr(wm, "lab_panel", None):
+                    wm.lab_panel.show_project(project)
+                    self.stack.setCurrentWidget(wm.lab_panel)
+                    return
+
         # For assets/references/renders/exports show the asset workspace
         self.asset_workspace.show_project_section(project, section, self._context, rel_path=rel_path)
         self.stack.setCurrentWidget(self.asset_workspace)

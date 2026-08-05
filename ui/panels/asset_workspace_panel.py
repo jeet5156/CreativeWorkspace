@@ -213,9 +213,14 @@ class AssetWorkspacePanel(QWidget):
         folder_assets = [a for a in all_assets if self._is_asset_in_folder(a, self._current_rel_path)]
 
         if not folder_cards and not folder_assets:
-            lbl = QLabel("No assets or subfolders yet\nDrag & Drop files here\nor Import Assets...")
+            sec_name = (self._section or "assets").lower()
+            if sec_name == "references":
+                empty_text = "🖼 No references yet\nDrag images or reference files here to collect inspiration"
+            else:
+                empty_text = "📂 No assets yet\nImport a folder or drag files here to start organizing"
+            lbl = QLabel(empty_text)
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet('color:#666;font-size:14px;')
+            lbl.setStyleSheet("color: #64748B; font-size: 13px; font-weight: 500; line-height: 1.6; padding: 40px;")
             self.grid.addWidget(lbl, 0, 0)
             self._assets_loaded = True
             try:

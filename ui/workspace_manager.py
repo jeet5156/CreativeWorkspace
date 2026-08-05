@@ -26,6 +26,14 @@ class WorkspaceManager:
         self.projects_dashboard = ProjectsDashboard(self.context)
         self._register_module("projects_dashboard", self.projects_dashboard)
 
+        # Register Lab Panel
+        try:
+            from ui.panels.lab_panel import LabPanel
+            self.lab_panel = LabPanel(self.context)
+            self._register_module("lab", self.lab_panel)
+        except Exception:
+            self.lab_panel = None
+
         # register placeholder modules first
         self._register_module("clients", ModulePlaceholder("Clients", "Manage client records, contacts, and deliverables."))
         self._register_module("assets_lib", ModulePlaceholder("Asset Library", "Global asset repository and tagging."))
@@ -82,10 +90,21 @@ class WorkspaceManager:
         if not w:
             return
         try:
+            try:
+                self.workspace.home_active.emit(False)
+            except Exception:
+                pass
             # If projects dashboard, refresh its content
             if key == "projects_dashboard":
                 try:
                     self.projects_dashboard.refresh()
+                except Exception:
+                    pass
+            elif key == "lab" and getattr(self, "lab_panel", None):
+                try:
+                    proj = getattr(self.context, "current_project", None)
+                    if proj:
+                        self.lab_panel.show_project(proj)
                 except Exception:
                     pass
             self.workspace.stack.setCurrentWidget(w)

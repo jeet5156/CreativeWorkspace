@@ -52,11 +52,8 @@ class ExplorerPanel(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.on_context_menu)
-        try:
-            self.tree.setDropIndicatorShown(True)
-            self.tree.setAutoExpandDelay(750)
-        except Exception:
-            pass
+        self.tree.itemClicked.connect(self._on_tree_item_clicked)
+        self.tree.itemExpanded.connect(self._on_tree_item_expanded)
 
         layout.addWidget(self.tree)
 
@@ -94,6 +91,10 @@ class ExplorerPanel(QWidget):
         self.projects_root.setExpanded(True)
 
         # Other app modules
+        self.lab_root = QTreeWidgetItem(["🧪 Lab"])
+        self.lab_root.setData(0, Qt.UserRole + 1, "lab")
+        self.tree.addTopLevelItem(self.lab_root)
+
         self.clients_root = QTreeWidgetItem(["👥 Clients"])
         self.clients_root.setData(0, Qt.UserRole + 1, "clients")
         self.tree.addTopLevelItem(self.clients_root)
@@ -112,6 +113,7 @@ class ExplorerPanel(QWidget):
 
         self.tree.itemClicked.connect(self.on_item_clicked)
         self.tree.itemExpanded.connect(self._on_item_expanded)
+        self.tree.itemCollapsed.connect(self._on_item_collapsed)
 
         # expose navigation_requested when clicking top-level nodes
 
@@ -130,8 +132,26 @@ class ExplorerPanel(QWidget):
                         self._assets_changed_connected = True
                     except Exception:
                         pass
+            if context and getattr(context, 'project_service', None):
+                if not getattr(self, '_project_updated_connected', False):
+                    try:
+                        context.project_service.project_updated.connect(self._on_project_updated)
+                        self._project_updated_connected = True
+                    except Exception:
+                        pass
         except Exception:
             self._context = None
+
+    def _on_project_updated(self, project):
+        if not project or not hasattr(self, '_project_cards'):
+            return
+        loc_str = str(getattr(project, 'location', ''))
+        if loc_str in self._project_cards:
+            try:
+                card = self._project_cards[loc_str]
+                card.update_project(project)
+            except Exception:
+                pass
 
     def _get_folder_service(self):
         context = getattr(self, "_context", None)
@@ -139,7 +159,7 @@ class ExplorerPanel(QWidget):
 
     def add_project(self, project: Project):
 
-        project_item = QTreeWidgetItem([f"📁 {project.name}"])
+        project_item = QTreeWidgetItem([""])
         project_item.setData(0, ROLE_PROJECT, project)
         project_item.setData(0, ROLE_SECTION, "dashboard")
         project_item.setData(0, ROLE_NODE_TYPE, "project")
@@ -147,6 +167,19 @@ class ExplorerPanel(QWidget):
         self.projects_root.addChild(project_item)
         if hasattr(project, 'location') and project.location:
             self._project_items[str(project.location)] = project_item
+
+        # Attach custom ProjectTreeCard widget
+        try:
+            from ui.widgets.project_tree_card import ProjectTreeCard
+            card = ProjectTreeCard(project)
+            card.clicked.connect(lambda p, item=project_item: self._on_project_card_clicked(item, p))
+            self.tree.setItemWidget(project_item, 0, card)
+            project_item.setSizeHint(0, card.sizeHint())
+            if not hasattr(self, '_project_cards'):
+                self._project_cards = {}
+            self._project_cards[str(project.location)] = card
+        except Exception:
+            pass
 
         sections = [
             ("📝 Notes", "notes"),
@@ -189,10 +222,72 @@ class ExplorerPanel(QWidget):
         self.projects_root.takeChildren()
         if hasattr(self, '_project_items'):
             self._project_items.clear()
+        if hasattr(self, '_project_cards'):
+            self._project_cards.clear()
+
+    def _on_project_card_clicked(self, item: QTreeWidgetItem, project: Project):
+        try:
+            self.tree.setCurrentItem(item)
+            self.on_item_clicked(item, 0)
+        except Exception:
+            pass
+
+    def _update_project_card_selection(self, selected_project):
+        if not hasattr(self, '_project_cards'):
+            return
+        selected_loc = str(getattr(selected_project, 'location', '')) if selected_project else ''
+        for loc, card in self._project_cards.items():
+            try:
+                card.set_selected(loc == selected_loc)
+            except Exception:
+                pass
+
+    def _on_tree_item_clicked(self, item: QTreeWidgetItem, column: int = 0):
+        if not item:
+            return
+        mod_key = item.data(0, Qt.UserRole + 1)
+        if mod_key in ("home", "projects", "lab", "clients", "assets_lib", "knowledge", "business"):
+            try:
+                self.navigation_requested.emit(mod_key)
+            except Exception:
+                pass
+            return
+
+        project = item.data(0, ROLE_PROJECT)
+        section = item.data(0, ROLE_SECTION) or "dashboard"
+        rel_path = item.data(0, ROLE_REL_PATH)
+
+        if project:
+            try:
+                self.project_selected.emit(project, section, rel_path)
+            except Exception:
+                pass
+
+    def _on_tree_item_expanded(self, item: QTreeWidgetItem):
+        self._on_item_expanded(item)
 
     def _on_item_expanded(self, item: QTreeWidgetItem):
-        """Lazy load and refresh subfolders from FolderService when a category or folder node is expanded."""
+        """Lazy load subfolders on category/folder expansion, and expand metadata on project header."""
         node_type = item.data(0, ROLE_NODE_TYPE)
+        if node_type == "project":
+            # Collapse only other top-level project nodes
+            if hasattr(self, 'projects_root') and self.projects_root:
+                for i in range(self.projects_root.childCount()):
+                    other_item = self.projects_root.child(i)
+                    if other_item != item and other_item.isExpanded():
+                        other_item.setExpanded(False)
+
+            project = item.data(0, ROLE_PROJECT)
+            loc_str = str(getattr(project, 'location', '')) if project else ''
+            if hasattr(self, '_project_cards') and loc_str in self._project_cards:
+                try:
+                    card = self._project_cards[loc_str]
+                    card.set_expanded(True)
+                    item.setSizeHint(0, card.sizeHint())
+                except Exception:
+                    pass
+            return
+
         if node_type not in ("category", "folder"):
             return
 
@@ -236,6 +331,20 @@ class ExplorerPanel(QWidget):
                 child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
 
             item.addChild(child)
+
+    def _on_item_collapsed(self, item: QTreeWidgetItem):
+        """Collapse metadata on project header when project tree node is collapsed."""
+        node_type = item.data(0, ROLE_NODE_TYPE)
+        if node_type == "project":
+            project = item.data(0, ROLE_PROJECT)
+            loc_str = str(getattr(project, 'location', '')) if project else ''
+            if hasattr(self, '_project_cards') and loc_str in self._project_cards:
+                try:
+                    card = self._project_cards[loc_str]
+                    card.set_expanded(False)
+                    item.setSizeHint(0, card.sizeHint())
+                except Exception:
+                    pass
 
     def _on_assets_changed(self, project, category=None):
         if not project or not hasattr(self, '_project_items'):
@@ -352,6 +461,8 @@ class ExplorerPanel(QWidget):
                         self.tree.setCurrentItem(target_node)
                     else:
                         self.tree.setCurrentItem(proj_item)
+
+                    self._update_project_card_selection(project)
 
                     try:
                         self.search_results.setVisible(False)
@@ -588,16 +699,20 @@ class ExplorerPanel(QWidget):
         return super().eventFilter(source, event)
 
     def _create_context_menu_actions(self):
+        self.open_project_action = QAction("Open", self)
+        self.open_project_action.triggered.connect(self._request_open_project)
 
-        self.set_snapshot_action = QAction("Set Snapshot", self)
-        self.set_snapshot_action.triggered.connect(
-            self._request_set_snapshot
-        )
+        self.rename_project_action = QAction("Rename", self)
+        self.rename_project_action.triggered.connect(self._request_rename_project)
+
+        self.set_snapshot_action = QAction("Set Snapshot...", self)
+        self.set_snapshot_action.triggered.connect(self._request_set_snapshot)
 
         self.remove_snapshot_action = QAction("Remove Snapshot", self)
-        self.remove_snapshot_action.triggered.connect(
-            self._request_remove_snapshot
-        )
+        self.remove_snapshot_action.triggered.connect(self._request_remove_snapshot)
+
+        self.delete_project_action = QAction("Delete", self)
+        self.delete_project_action.triggered.connect(self._request_delete_project)
 
         # Folder actions
         self.new_folder_action = QAction("New Folder...", self)
@@ -613,7 +728,6 @@ class ExplorerPanel(QWidget):
         return getattr(self, '_context_menu_item', None) or self.tree.currentItem()
 
     def on_context_menu(self, position):
-
         item = self.tree.itemAt(position)
         project = item.data(0, Qt.UserRole) if item else None
         section = item.data(0, Qt.UserRole + 1) if item else None
@@ -626,21 +740,71 @@ class ExplorerPanel(QWidget):
         self._context_menu_item = item
 
         menu = QMenu(self)
-        menu.addAction(self.set_snapshot_action)
-        menu.addAction(self.remove_snapshot_action)
 
-        # If the clicked item is a project section offer folder actions
-        if section in ("assets", "references", "notes", "renders", "exports"):
+        if node_type == "project":
+            menu.addAction(self.open_project_action)
+            menu.addAction(self.rename_project_action)
             menu.addSeparator()
-            menu.addAction(self.new_folder_action)
-            if node_type == "folder":
-                menu.addAction(self.rename_folder_action)
-            menu.addAction(self.delete_folder_action)
+            menu.addAction(self.set_snapshot_action)
+            menu.addAction(self.remove_snapshot_action)
+            menu.addSeparator()
+            menu.addAction(self.delete_project_action)
+        else:
+            # Section / Folder item actions
+            menu.addAction(self.set_snapshot_action)
+            menu.addAction(self.remove_snapshot_action)
+            if section in ("assets", "references", "notes", "renders", "exports"):
+                menu.addSeparator()
+                menu.addAction(self.new_folder_action)
+                if node_type == "folder":
+                    menu.addAction(self.rename_folder_action)
+                menu.addAction(self.delete_folder_action)
 
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
         self._context_menu_project = None
         self._context_menu_item = None
+
+    def _request_open_project(self):
+        if self._context_menu_project is not None:
+            self.reveal_project(self._context_menu_project, section="dashboard")
+
+    def _request_rename_project(self):
+        if self._context_menu_project is None:
+            return
+        try:
+            from PySide6.QtWidgets import QInputDialog
+            p = self._context_menu_project
+            new_name, ok = QInputDialog.getText(self, "Rename Project", f"New name for '{p.name}':", text=p.name)
+            if ok and new_name and new_name != p.name:
+                p.name = new_name
+                if getattr(self, '_context', None) and getattr(self._context, 'project_service', None):
+                    self._context.project_service.save_project(p)
+                if hasattr(self, '_project_cards') and str(p.location) in self._project_cards:
+                    self._project_cards[str(p.location)].update_project(p)
+                self.project_selected.emit(p, "dashboard", None)
+        except Exception:
+            pass
+
+    def _request_delete_project(self):
+        if self._context_menu_project is None:
+            return
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            p = self._context_menu_project
+            confirm = QMessageBox.question(
+                self,
+                "Delete Project",
+                f"Are you sure you want to delete project '{p.name}'?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirm == QMessageBox.Yes and getattr(self, '_context', None) and getattr(self._context, 'project_service', None):
+                self._context.project_service.delete_project(p)
+                self.clear_projects()
+                projects = self._context.project_service.list_projects()
+                self.load_projects(projects)
+        except Exception:
+            pass
 
     def _request_set_snapshot(self):
 
@@ -850,6 +1014,12 @@ class ExplorerPanel(QWidget):
         rel_path = item.data(0, ROLE_REL_PATH)
 
         if isinstance(project, Project):
+            self._update_project_card_selection(project)
+            if getattr(self, '_context', None) and getattr(self._context, 'inspector_panel', None):
+                try:
+                    self._context.inspector_panel.show_project(project)
+                except Exception:
+                    pass
             self.project_selected.emit(project, section, rel_path)
             return
 

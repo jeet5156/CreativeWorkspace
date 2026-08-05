@@ -1,44 +1,57 @@
-DARK_THEME = """
-QMainWindow {
-    background-color: #2b2b2b;
-}
+# -----------------------------------------------------------------------------
+# CreativeWorkspace Theme Tokens
+# -----------------------------------------------------------------------------
+BG_DARK = "#1B1D27"
+CARD_BG = "#202334"
+CARD_HOVER = "#262A3E"
+BORDER_COLOR = "#313652"
+TEXT_PRIMARY = "#F1F5F9"
+TEXT_MUTED = "#94A3B8"
+ACCENT = "#6366F1"
 
-QWidget {
-    background-color: #2b2b2b;
-    color: #dddddd;
+DARK_THEME = f"""
+QMainWindow {{
+    background-color: {BG_DARK};
+}}
+
+QWidget {{
+    background-color: {BG_DARK};
+    color: {TEXT_PRIMARY};
     font-size: 10pt;
-}
+}}
 
-QMenuBar {
-    background-color: #313335;
-    color: white;
-}
+QMenuBar {{
+    background-color: #14161D;
+    color: {TEXT_PRIMARY};
+}}
 
-QMenuBar::item:selected {
-    background-color: #3d6fb4;
-}
+QMenuBar::item:selected {{
+    background-color: {CARD_HOVER};
+}}
 
-QMenu {
-    background-color: #313335;
-    color: white;
-}
+QMenu {{
+    background-color: {CARD_BG};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER_COLOR};
+}}
 
-QToolBar {
-    background-color: #313335;
+QToolBar {{
+    background-color: #14161D;
     border: none;
     spacing: 6px;
-}
+}}
 
-QStatusBar {
-    background-color: #313335;
-}
+QStatusBar {{
+    background-color: #14161D;
+}}
 
-QTreeWidget {
-    background-color: #252526;
-    border: 1px solid #444;
-}
+QTreeWidget {{
+    background-color: {BG_DARK};
+    border: 1px solid {BORDER_COLOR};
+    color: {TEXT_PRIMARY};
+}}
 
-QLabel {
-    color: #dddddd;
-}
-"""
+QLabel {{
+    color: {TEXT_PRIMARY};
+}}
+"""

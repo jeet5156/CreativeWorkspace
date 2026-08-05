@@ -153,7 +153,10 @@ class MainWindow(QMainWindow):
             if self.workspace.home:
                 self.workspace.home.new_project_requested.connect(self.new_project)
                 self.workspace.home.open_project_requested.connect(self.open_project)
-                # double-click recent -> navigate
+                self.workspace.home.open_recent_requested.connect(self.open_project)
+                self.workspace.home.open_assets_requested.connect(
+                    lambda: self.navigation_service.handle_navigation("assets_lib") if self.navigation_service else None
+                )
                 self.workspace.home.open_recent_project.connect(lambda proj: self.project_selected(proj, 'dashboard'))
         except Exception:
             pass
@@ -468,6 +471,18 @@ class MainWindow(QMainWindow):
     def project_selected(self, project, section, rel_path=None):
 
         self.context.set_current_project(project)
+
+        try:
+            if hasattr(self, "inspector") and self.inspector:
+                self.inspector.show_project(project)
+        except Exception:
+            pass
+
+        try:
+            if getattr(self.context, "project_service", None):
+                self.context.project_service.open_project(project)
+        except Exception:
+            pass
 
         # If the asset index does not exist, rebuild it automatically for older projects
         try:

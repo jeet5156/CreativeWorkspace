@@ -1,5 +1,5 @@
 from PySide6.QtCore import QObject, Signal, QRunnable, QThreadPool, Qt, QSize
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QImageReader, QPixmap
 from pathlib import Path
 import json
 import hashlib
@@ -19,68 +19,80 @@ class _ThumbWorker(QRunnable):
 
     def run(self):
         try:
-            # Load using Qt QImage (thread-safe for non-GUI threads)
-            img = QImage()
-            loaded = img.load(str(self.src_path))
-            if not loaded or img.isNull():
-                # nothing to do
+            print(f"[THUMB] worker started: src_path={self.src_path}, asset_id={self.asset_id}")
+            reader = QImageReader(str(self.src_path))
+            reader.setAutoTransform(True)
+
+            orig_size = reader.size()
+            if not orig_size.isValid():
+                self.service._mark_failed(self.project_location, self.rel_path, reason="invalid_header")
                 return
-            # scale while keeping aspect
-            w = self.size.width()
-            h = self.size.height()
-            scaled = img.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            # ensure parent exists
+
+            w, h = orig_size.width(), orig_size.height()
+            est_mb = (w * h * 4) / (1024 * 1024)
+
+            if est_mb > 256.0 or (w * h > 40000000):
+                print(f"[THUMBNAIL] Skipping oversized image (>256MB decoding limit): {self.src_path} ({w}x{h}, est. {est_mb:.1f} MB)")
+                self.service._mark_failed(self.project_location, self.rel_path, reason="oversized", dimensions=(w, h), est_mb=est_mb)
+                return
+
+            target_size = orig_size.scaled(self.size, Qt.KeepAspectRatio)
+            reader.setScaledSize(target_size)
+
+            img = reader.read()
+            if img.isNull():
+                self.service._mark_failed(self.project_location, self.rel_path, reason="decode_error")
+                return
+
             self.thumb_path.parent.mkdir(parents=True, exist_ok=True)
-            # save as jpg for broad support
-            scaled.save(str(self.thumb_path), "JPEG", quality=85)
-            # update index
+            img.save(str(self.thumb_path), "JPEG", quality=85)
+            print(f"[THUMB] thumbnail written: thumb_path={self.thumb_path}")
+
             try:
                 self.service._update_index(self.project_location, self.rel_path, str(self.thumb_path), os.path.getmtime(self.src_path))
             except Exception:
                 pass
-            # emit ready
+
+            key = (str(self.project_location), str(self.rel_path))
+            subscribers = self.service._subscribers.pop(key, set())
+            if self.asset_id:
+                subscribers.add(str(self.asset_id))
+
+            for sub_id in subscribers:
+                try:
+                    print(f"[THUMB] emitting callback: asset_id={sub_id}, thumb_path={self.thumb_path}")
+                    self.service.thumbnail_ready.emit(sub_id, str(self.thumb_path))
+                except Exception:
+                    pass
+
+        except Exception as e:
             try:
-                self.service.thumbnail_ready.emit(self.asset_id, str(self.thumb_path))
+                self.service._mark_failed(self.project_location, self.rel_path, reason="exception")
             except Exception:
                 pass
-            # remove queued marker
+        finally:
             try:
                 key = (str(self.project_location), str(self.rel_path))
                 if key in self.service._queued:
-                    try:
-                        self.service._queued.remove(key)
-                    except Exception:
-                        try:
-                            self.service._queued.discard(key)
-                        except Exception:
-                            pass
+                    self.service._queued.discard(key)
+                self.service._subscribers.pop(key, None)
             except Exception:
                 pass
-        except Exception:
-            # ensure queued cleared on unexpected failure
-            try:
-                key = (str(self.project_location), str(self.rel_path))
-                if key in self.service._queued:
-                    try:
-                        self.service._queued.remove(key)
-                    except Exception:
-                        try:
-                            self.service._queued.discard(key)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+
+
+import traceback
 
 
 class ThumbnailService(QObject):
     """ThumbnailService
 
     Responsibilities:
-    - generate thumbnails in background threads
-    - cache thumbnails under <project>/.creativeworkspace/thumbnails
-    - emit thumbnail_ready(asset_id, thumb_path) when ready
-    - provide get_cached(project, asset) and generate_async methods
-    - invalidate thumbnails when assets change
+    - 3-Level Cache Architecture:
+        Level 1: Directory scan cache (in-memory folder mtime & scan result)
+        Level 2: Thumbnail index cache (in-memory index.json dict per project)
+        Level 3: Loaded QPixmap cache (in-memory QPixmap cache for instant rendering)
+    - Controlled background thumbnail decoding using QImageReader (max 2 threads)
+    - Failed thumbnail caching to avoid repeated decoding attempts on corrupted/oversized files
     """
 
     thumbnail_ready = Signal(str, str)  # asset_id, thumb_path
@@ -89,8 +101,14 @@ class ThumbnailService(QObject):
         super().__init__()
         self.asset_service = asset_service
         self.pool = QThreadPool.globalInstance()
-        # track queued tasks to avoid duplicates: keys are (project_location, rel_path)
+        self.pool.setMaxThreadCount(2)  # Controlled background generation queue
         self._queued = set()
+        self._subscribers = {}  # key (proj_loc, rel_path) -> Set[asset_id]
+
+        # 3-Level Caches
+        self._dir_scan_cache = {}  # (proj_loc, folder_rel) -> (mtime, assets)
+        self._index_cache = {}     # proj_loc -> index_dict
+        self._pixmap_cache = {}    # thumb_path -> QPixmap
 
     def _thumb_folder(self, project_location: str) -> Path:
         p = Path(project_location) / ".creativeworkspace" / "thumbnails"
@@ -101,16 +119,29 @@ class ThumbnailService(QObject):
         return Path(project_location) / ".creativeworkspace" / "thumbnails" / "index.json"
 
     def _load_index(self, project_location: str) -> dict:
+        if project_location in self._index_cache:
+            return self._index_cache[project_location]
+
         idx_path = self._index_file(project_location)
         if not idx_path.exists():
+            self._index_cache[project_location] = {}
             return {}
         try:
             with open(idx_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                self._index_cache[project_location] = data
+                return data
         except Exception:
+            self._index_cache[project_location] = {}
             return {}
 
+    CACHE_VERSION = 1
+
     def _save_index(self, project_location: str, data: dict):
+        if not isinstance(data, dict):
+            data = {}
+        data["version"] = self.CACHE_VERSION
+        self._index_cache[project_location] = data
         idx_path = self._index_file(project_location)
         try:
             idx_path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +155,20 @@ class ThumbnailService(QObject):
         data[str(rel_path)] = {"thumb": str(thumb_path), "mtime": mtime}
         self._save_index(project_location, data)
 
+    def _mark_failed(self, project_location: str, rel_path: str, reason: str = "oversized", dimensions: tuple = None, est_mb: float = 0.0):
+        data = self._load_index(project_location)
+        entry = {
+            "failed": True,
+            "reason": reason,
+            "mtime": 0,
+        }
+        if dimensions:
+            entry["dimensions"] = list(dimensions)
+        if est_mb > 0:
+            entry["estimated_mb"] = round(est_mb, 1)
+        data[str(rel_path)] = entry
+        self._save_index(project_location, data)
+
     def get_cached(self, project_location: str, rel_path: str, src_path: str):
         """Return cached thumbnail path if still valid, otherwise None."""
         try:
@@ -131,10 +176,11 @@ class ThumbnailService(QObject):
             entry = idx.get(str(rel_path))
             if not entry:
                 return None
+            if entry.get("failed"):
+                return "FAILED"
             thumb = Path(entry.get("thumb"))
             if not thumb.exists():
                 return None
-            # validate mtime
             try:
                 src_mtime = os.path.getmtime(src_path)
                 if float(entry.get("mtime", 0)) != float(src_mtime):
@@ -145,6 +191,35 @@ class ThumbnailService(QObject):
         except Exception:
             return None
 
+    def get_cached_pixmap(self, thumb_path: str):
+        """Level 3 Cache: Return QPixmap for thumb_path (cached in RAM or loaded on demand)."""
+        if not thumb_path or thumb_path == "FAILED":
+            return None
+        norm_path = str(Path(thumb_path).resolve()) if os.path.exists(thumb_path) else str(thumb_path)
+        if norm_path in self._pixmap_cache:
+            return self._pixmap_cache[norm_path]
+        if thumb_path in self._pixmap_cache:
+            return self._pixmap_cache[thumb_path]
+        try:
+            pix = QPixmap(norm_path)
+            if pix and not pix.isNull():
+                self._pixmap_cache[norm_path] = pix
+                self._pixmap_cache[thumb_path] = pix
+                return pix
+            reader = QImageReader(norm_path)
+            reader.setAutoTransform(True)
+            img = reader.read()
+            if img and not img.isNull():
+                pix = QPixmap.fromImage(img)
+                if not pix or pix.isNull():
+                    pix = img
+                self._pixmap_cache[norm_path] = pix
+                self._pixmap_cache[thumb_path] = pix
+                return pix
+        except Exception:
+            pass
+        return None
+
     def _thumb_name_for(self, rel_path: str, mtime: float) -> str:
         key = f"{rel_path}|{int(mtime)}"
         h = hashlib.sha1(key.encode('utf-8')).hexdigest()
@@ -153,20 +228,36 @@ class ThumbnailService(QObject):
     def generate_async(self, project_location: str, rel_path: str, src_path: str, size, asset_id: str):
         """Start background generation if not queued or cached. Returns True if generation queued or already exists."""
         try:
+            stack = traceback.extract_stack()
+            caller = stack[-2] if len(stack) >= 2 else None
+            caller_str = f"{Path(caller.filename).name}:{caller.lineno} in {caller.name}" if caller else "unknown"
+            print(f"[GEN_ASYNC_REC] received asset_id={asset_id}, caller={caller_str}, rel_path={rel_path}")
             # ensure size default
             if not size:
                 size = QSize(140, 160)
-            # if cached and valid, emit ready synchronously
+
+            key = (str(project_location), str(rel_path))
+            if asset_id:
+                if key not in self._subscribers:
+                    self._subscribers[key] = set()
+                self._subscribers[key].add(str(asset_id))
+
+            # if cached and valid, emit ready synchronously to all waiting subscribers
             cached = self.get_cached(project_location, rel_path, src_path)
             if cached:
-                try:
-                    self.thumbnail_ready.emit(asset_id, cached)
-                except Exception:
-                    pass
+                subscribers = self._subscribers.pop(key, set())
+                if asset_id:
+                    subscribers.add(str(asset_id))
+                for sub_id in subscribers:
+                    try:
+                        self.thumbnail_ready.emit(sub_id, cached)
+                    except Exception:
+                        pass
                 return True
-            key = (str(project_location), str(rel_path))
+
             if key in self._queued:
                 return True
+
             # prepare target filename based on mtime to handle invalidation
             try:
                 mtime = os.path.getmtime(src_path)
@@ -175,6 +266,7 @@ class ThumbnailService(QObject):
             name = self._thumb_name_for(rel_path, mtime)
             thumb_dir = self._thumb_folder(project_location)
             thumb_path = thumb_dir / name
+
             # queue worker
             worker = _ThumbWorker(self, project_location, rel_path, src_path, thumb_path, size, asset_id)
             self._queued.add(key)

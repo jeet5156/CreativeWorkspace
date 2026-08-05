@@ -179,11 +179,11 @@ class AssetService(QObject):
             pass
         return True
 
-    def import_paths(self, project, section: str, paths: List[str], target_rel_path: str | None = None):
+    def import_paths(self, project, section: str, paths: List[str], target_rel_path: str | None = None, preserve_hierarchy: bool = True):
         """
         Import files/folders and update the index. Returns report dict.
-        If target_rel_path is provided (e.g. "Assets/Hero"), imports files directly into that directory
-        and bypasses extension-based routing.
+        If target_rel_path is provided (e.g. "Assets/Hero"), imports files directly into that directory.
+        If preserve_hierarchy is True (default), maintains subfolder directory structures for directory imports.
         Emits assets_changed(project, section) when done.
         """
         imported = []
@@ -217,11 +217,17 @@ class AssetService(QObject):
                     if not file.is_file():
                         continue
                     if norm_target_rel:
-                        dest_dir = Path(project.location) / norm_target_rel
+                        base_dest = Path(project.location) / norm_target_rel
                     else:
-                        dest_dir = self._determine_dest_dir(project, section, file)
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                    dest = dest_dir / file.name
+                        base_dest = self._determine_dest_dir(project, section, file)
+
+                    if preserve_hierarchy and not norm_target_rel:
+                        rel_sub = file.relative_to(src.parent)
+                        dest = base_dest / rel_sub
+                    else:
+                        dest = base_dest / file.name
+
+                    dest.parent.mkdir(parents=True, exist_ok=True)
                     res = self._copy_with_duplicate_handling(file, dest, imported, skipped)
                     if isinstance(res, str):
                         errors.append(f"Error copying {file}: {res}")

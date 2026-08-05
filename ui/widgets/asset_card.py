@@ -108,10 +108,12 @@ class AssetCard(QWidget):
         try:
             if self._thumb_service and self._project_location:
                 cached = self._thumb_service.get_cached(self._project_location, rel_path, str(abs_path))
+                if cached == "FAILED":
+                    return  # Fast fallback to placeholder icon; do not retry failed thumbnails
                 if cached:
                     try:
-                        pix = QPixmap(cached)
-                        if not pix.isNull():
+                        pix = self._thumb_service.get_cached_pixmap(cached) if hasattr(self._thumb_service, "get_cached_pixmap") else QPixmap(cached)
+                        if pix and not pix.isNull():
                             self.thumb.setPixmap(pix.scaled(self.thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
                             return
                     except Exception:

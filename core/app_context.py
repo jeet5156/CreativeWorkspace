@@ -20,6 +20,13 @@ class AppContext:
         self.app_state = AppState()
         self.activity_service = ActivityService()
 
+        # Lab service (Lab board persistence)
+        try:
+            from services.lab_service import LabService
+            self.lab_service = LabService(self.project_service)
+        except Exception:
+            self.lab_service = None
+
         # Thumbnail service (background generation & cache)
         try:
             from services.thumbnail_service import ThumbnailService

@@ -1,5 +1,4 @@
 from pathlib import Path
-
 from PySide6.QtWidgets import (
     QWidget,
     QLabel,
@@ -7,12 +6,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QFormLayout,
+    QFrame,
+    QScrollArea,
 )
-
 from PySide6.QtCore import Qt, Signal
 
 from ui.widgets.image_preview import ImagePreview
 from services.status_service import Status
+from ui.theme import BG_DARK, CARD_BG, CARD_HOVER, BORDER_COLOR, TEXT_PRIMARY, TEXT_MUTED, ACCENT
 
 
 class ClickableLabel(QLabel):
@@ -23,16 +24,13 @@ class ClickableLabel(QLabel):
             if event.button() == Qt.LeftButton:
                 self.clicked.emit()
         except Exception:
-            # fallback for PySide differences
-            try:
-                self.clicked.emit()
-            except Exception:
-                pass
+            pass
         super().mouseReleaseEvent(event)
 
 
 class DashboardPanel(QWidget):
-    # Signal emitted when user clicks project name: (project)
+    """Inspiring Project Overview Home ('What is happening in this project?')."""
+
     project_reveal = Signal(object)
 
     def __init__(self):
@@ -42,125 +40,252 @@ class DashboardPanel(QWidget):
         self._current_project = None
 
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # --------------------------------------------------
-        # Title
-        # --------------------------------------------------
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setStyleSheet(f"QScrollArea {{ background-color: {BG_DARK}; border: none; }}")
 
-        title = QLabel("Project Dashboard")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("""
-            QLabel{
-                font-size:18px;
-                font-weight:bold;
-                padding:8px;
-            }
+        container = QWidget()
+        container.setStyleSheet(f"QWidget {{ background-color: {BG_DARK}; }}")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(24)
+
+        # ---------------------------------------------------------------------
+        # Hero Header (Open, Breathable Project Identity)
+        # ---------------------------------------------------------------------
+        hero_layout = QVBoxLayout()
+        hero_layout.setSpacing(6)
+
+        top_row = QHBoxLayout()
+
+        self.name_value = ClickableLabel("Project Dashboard")
+        self.name_value.setStyleSheet(f"font-size: 26px; font-weight: bold; color: {TEXT_PRIMARY};")
+        self.name_value.clicked.connect(lambda: self.project_reveal.emit(self._current_project))
+        top_row.addWidget(self.name_value)
+
+        top_row.addStretch()
+
+        self.priority_badge = QLabel("Medium Priority")
+        self.priority_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #3B2D1B; color: #FBBF24;")
+        top_row.addWidget(self.priority_badge)
+
+        self.status_badge = QLabel("Active")
+        self.status_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #14382B; color: #34D399;")
+        top_row.addWidget(self.status_badge)
+
+        hero_layout.addLayout(top_row)
+
+        self.type_value = QLabel("📁 General Project")
+        self.type_value.setStyleSheet(f"font-size: 13px; color: {TEXT_MUTED};")
+        hero_layout.addWidget(self.type_value)
+
+        layout.addLayout(hero_layout)
+
+        # ---------------------------------------------------------------------
+        # Overview Columns: Description (Left) & Cover Image (Right)
+        # ---------------------------------------------------------------------
+        cols = QHBoxLayout()
+        cols.setSpacing(24)
+
+        # Left Column: Description & Metadata
+        left_box = QFrame()
+        left_box.setStyleSheet(f"""
+            QFrame {{
+                background-color: {CARD_BG};
+                border: 1px solid {BORDER_COLOR};
+                border-radius: 8px;
+                padding: 16px;
+            }}
+            QLabel#section_title {{
+                color: {ACCENT};
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
+            }}
         """)
+        left_layout = QVBoxLayout(left_box)
+        left_layout.setSpacing(12)
 
-        main_layout.addWidget(title)
-
-        # --------------------------------------------------
-        # Project Information
-        # --------------------------------------------------
-
-        form = QFormLayout()
-
-        # Project fields; make name clickable to reveal in Explorer
-        self.name_value = ClickableLabel("-")
-        self.type_value = QLabel("-")
-        self.location_value = QLabel("-")
-        self.created_value = QLabel("-")
-
-        form.addRow("Name:", self.name_value)
-        form.addRow("Type:", self.type_value)
-        form.addRow("Location:", self.location_value)
-        form.addRow("Created:", self.created_value)
-
-        # connect click to emit reveal signal
-        try:
-            self.name_value.clicked.connect(lambda: self.project_reveal.emit(self._current_project))
-        except Exception:
-            pass
-
-        main_layout.addLayout(form)
-
-        # --------------------------------------------------
-        # Status Indicators (data-driven)
-        # --------------------------------------------------
-
-        status_layout = QFormLayout()
-
-        # Each status has a small colored indicator label and a text label
-        self.assets_status_indicator = QLabel()
-        self.assets_status_indicator.setFixedSize(12, 12)
-        self.assets_status_label = QLabel("-")
-        status_layout.addRow("Assets:", self._wrap_indicator(self.assets_status_indicator, self.assets_status_label))
-
-        self.references_status_indicator = QLabel()
-        self.references_status_indicator.setFixedSize(12, 12)
-        self.references_status_label = QLabel("-")
-        status_layout.addRow("References:", self._wrap_indicator(self.references_status_indicator, self.references_status_label))
-
-        self.exports_status_indicator = QLabel()
-        self.exports_status_indicator.setFixedSize(12, 12)
-        self.exports_status_label = QLabel("-")
-        status_layout.addRow("Exports:", self._wrap_indicator(self.exports_status_indicator, self.exports_status_label))
-
-        main_layout.addLayout(status_layout)
-
-        # --------------------------------------------------
-        # Description
-        # --------------------------------------------------
-
-        description_layout = QVBoxLayout()
-
-        description_layout.addWidget(QLabel("Description"))
+        desc_title = QLabel("OVERVIEW & DESCRIPTION")
+        desc_title.setObjectName("section_title")
+        left_layout.addWidget(desc_title)
 
         self.description = QTextEdit()
         self.description.setReadOnly(True)
-        self.description.setMinimumHeight(220)
+        self.description.setMinimumHeight(140)
+        self.description.setStyleSheet(f"background-color: #14161D; color: #CBD5E1; border: 1px solid {BORDER_COLOR}; border-radius: 6px; padding: 8px;")
+        left_layout.addWidget(self.description)
 
-        description_layout.addWidget(self.description)
+        info_form = QFormLayout()
+        info_form.setSpacing(8)
+        self.location_value = QLabel("-")
+        self.created_value = QLabel("-")
+        self.modified_value = QLabel("-")
+        self.location_value.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        self.created_value.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        self.modified_value.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
 
-        # --------------------------------------------------
-        # Snapshot
-        # --------------------------------------------------
+        info_form.addRow("Location:", self.location_value)
+        info_form.addRow("Created:", self.created_value)
+        info_form.addRow("Modified:", self.modified_value)
+        left_layout.addLayout(info_form)
 
-        snapshot_layout = QVBoxLayout()
+        cols.addWidget(left_box, stretch=3)
 
-        snapshot_layout.addWidget(QLabel("Project Snapshot"))
+        # Right Column: Large Cover Artwork (No title label above it)
+        right_box = QFrame()
+        right_box.setStyleSheet(f"""
+            QFrame {{
+                background-color: {CARD_BG};
+                border: 1px solid {BORDER_COLOR};
+                border-radius: 8px;
+                padding: 12px;
+            }}
+        """)
+        right_layout = QVBoxLayout(right_box)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setSpacing(0)
 
         self.snapshot = ImagePreview()
+        self.snapshot.setFixedHeight(300)
+        self.snapshot.setStyleSheet(f"border-radius: 6px; border: 1px solid {BORDER_COLOR};")
+        right_layout.addWidget(self.snapshot)
 
-        snapshot_layout.addWidget(self.snapshot)
+        cols.addWidget(right_box, stretch=2)
 
-        # --------------------------------------------------
-        # Bottom Area
-        # --------------------------------------------------
+        layout.addLayout(cols)
 
-        bottom_layout = QHBoxLayout()
-        bottom_layout.addLayout(description_layout, 2)
-        bottom_layout.addSpacing(12)
-        bottom_layout.addLayout(snapshot_layout, 1)
+        # ---------------------------------------------------------------------
+        # Section 3: Project Health (Compact Horizontal Status Cards)
+        # ---------------------------------------------------------------------
+        health_container = QVBoxLayout()
+        health_container.setSpacing(12)
 
-        main_layout.addLayout(bottom_layout)
+        stat_header = QLabel("PROJECT HEALTH")
+        stat_header.setStyleSheet(f"color: {ACCENT}; font-size: 11px; font-weight: bold; letter-spacing: 0.5px;")
+        health_container.addWidget(stat_header)
 
-        main_layout.addStretch()
+        # Horizontal Row of Cards
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(16)
 
-    def _wrap_indicator(self, indicator_label: QLabel, text_label: QLabel):
-        container = QHBoxLayout()
-        container.addWidget(indicator_label)
-        container.addSpacing(8)
-        container.addWidget(text_label)
-        w = QWidget()
-        w.setLayout(container)
-        return w
+        # Card 1: Assets
+        self.assets_card, self.assets_status_indicator, self.assets_status_label = self._create_health_card("Assets")
+        cards_row.addWidget(self.assets_card)
+
+        # Card 2: References
+        self.references_card, self.references_status_indicator, self.references_status_label = self._create_health_card("References")
+        cards_row.addWidget(self.references_card)
+
+        # Card 3: Exports
+        self.exports_card, self.exports_status_indicator, self.exports_status_label = self._create_health_card("Exports")
+        cards_row.addWidget(self.exports_card)
+
+        health_container.addLayout(cards_row)
+        layout.addLayout(health_container)
+
+        # ---------------------------------------------------------------------
+        # Section 4: Recent Activity & Milestones (Full Width Sections)
+        # ---------------------------------------------------------------------
+        activity_box = QFrame()
+        activity_box.setStyleSheet(f"""
+            QFrame {{
+                background-color: {CARD_BG};
+                border: 1px solid {BORDER_COLOR};
+                border-radius: 8px;
+                padding: 16px;
+            }}
+            QLabel#section_title {{
+                color: {ACCENT};
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
+            }}
+            QLabel#placeholder_text {{
+                color: #64748B;
+                font-size: 12px;
+            }}
+        """)
+        act_layout = QVBoxLayout(activity_box)
+        act_layout.setSpacing(12)
+
+        recent_act_title = QLabel("RECENT ACTIVITY")
+        recent_act_title.setObjectName("section_title")
+        act_layout.addWidget(recent_act_title)
+
+        recent_act = QLabel("⚡ No recent events logged")
+        recent_act.setObjectName("placeholder_text")
+        act_layout.addWidget(recent_act)
+
+        milestones_title = QLabel("MILESTONES & TIMELINE")
+        milestones_title.setObjectName("section_title")
+        act_layout.addWidget(milestones_title)
+
+        milestones = QLabel("🏁 Phase 1 Foundation Active")
+        milestones.setObjectName("placeholder_text")
+        act_layout.addWidget(milestones)
+
+        layout.addWidget(activity_box)
+
+        layout.addStretch()
+
+        scroll_area.setWidget(container)
+        main_layout.addWidget(scroll_area)
+
+    def _create_health_card(self, title: str):
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {CARD_BG};
+                border: 1px solid {BORDER_COLOR};
+                border-radius: 8px;
+                padding: 12px;
+            }}
+        """)
+        c_layout = QVBoxLayout(card)
+        c_layout.setSpacing(8)
+
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; font-weight: bold;")
+        c_layout.addWidget(lbl_title)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+
+        indicator = QLabel()
+        indicator.setFixedSize(10, 10)
+        indicator.setStyleSheet("background-color: #64748B; border-radius: 5px;")
+        status_row.addWidget(indicator)
+
+        label = QLabel("Empty")
+        label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        status_row.addWidget(label)
+        status_row.addStretch()
+
+        c_layout.addLayout(status_row)
+        return card, indicator, label
 
     def set_context(self, context):
-        """Allow service layer access and listen for changes."""
         self._context = context
         try:
             context.asset_service.assets_changed.connect(self._on_assets_changed)
+        except Exception:
+            pass
+        try:
+            context.project_service.project_updated.connect(self._on_project_updated)
+        except Exception:
+            pass
+
+    def _on_project_updated(self, project):
+        if not self._current_project or not project:
+            return
+        try:
+            if str(project.location) == str(self._current_project.location):
+                self.show_project(project)
         except Exception:
             pass
 
@@ -172,31 +297,56 @@ class DashboardPanel(QWidget):
                 return
         except Exception:
             return
-        # update statuses when asset/service reports changes
         self._update_status_indicators(self._current_project)
 
     def show_project(self, project):
         self._current_project = project
+        if not project:
+            return
 
         self.name_value.setText(project.name)
-        self.type_value.setText(project.project_type)
-        self.location_value.setText(project.location)
-        self.created_value.setText(
-            project.created.strftime("%d %b %Y")
-        )
+        proj_type = (getattr(project, 'project_type', None) or 'general').capitalize()
+        self.type_value.setText(f"📁 {proj_type} Project")
 
-        self.description.setPlainText(project.description)
+        self.location_value.setText(str(getattr(project, 'location', '-')))
+        if getattr(project, 'created', None):
+            self.created_value.setText(project.created.strftime("%d %b %Y"))
+        else:
+            self.created_value.setText("—")
 
-        snapshot = (
-            Path(project.location) / "snapshot.png"
-        )
+        if getattr(project, 'modified', None):
+            self.modified_value.setText(project.modified.strftime("%d %b %Y"))
+        else:
+            self.modified_value.setText("—")
 
-        if snapshot.exists():
+        self.description.setPlainText(getattr(project, 'description', ''))
+
+        prio_key = str(getattr(project, 'priority', 'medium')).lower()
+        if prio_key in ("high", "urgent"):
+            self.priority_badge.setText("High Priority")
+            self.priority_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #3F1D24; color: #F87171;")
+        elif prio_key == "low":
+            self.priority_badge.setText("Low Priority")
+            self.priority_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #14382B; color: #34D399;")
+        else:
+            self.priority_badge.setText("Medium Priority")
+            self.priority_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #3B2D1B; color: #FBBF24;")
+
+        status_key = str(getattr(project, 'status', 'active')).lower()
+        self.status_badge.setText(status_key.capitalize())
+        if status_key == "active":
+            self.status_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #14382B; color: #34D399;")
+        elif status_key == "in progress":
+            self.status_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #1E2E4A; color: #60A5FA;")
+        else:
+            self.status_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #1E293B; color: #94A3B8;")
+
+        snapshot = Path(project.location) / "snapshot.png" if getattr(project, 'location', None) else None
+        if snapshot and snapshot.exists():
             self.snapshot.load_image(snapshot)
         else:
             self.snapshot.clear()
 
-        # update status indicators via service layer
         self._update_status_indicators(project)
 
     def _update_status_indicators(self, project):
@@ -207,25 +357,25 @@ class DashboardPanel(QWidget):
         except Exception:
             statuses = {}
 
-        # helper to render status
         def render_for(key, indicator, label):
             status = statuses.get(key)
             if status == Status.READY:
-                color = "#28a745"  # green
+                color = "#22C55E"  # emerald
                 text = "Ready"
             elif status == Status.EMPTY:
-                color = "#6c757d"  # gray
+                color = "#64748B"  # slate
                 text = "Empty"
             elif status == Status.WARNING:
-                color = "#ffc107"  # amber
+                color = "#F59E0B"  # amber
                 text = "Warning"
             else:
-                color = "#6c757d"
+                color = "#64748B"
                 text = "Unknown"
 
-            indicator.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
+            indicator.setStyleSheet(f"background-color: {color}; border-radius: 5px;")
             label.setText(text)
 
         render_for("assets", self.assets_status_indicator, self.assets_status_label)
         render_for("references", self.references_status_indicator, self.references_status_label)
         render_for("exports", self.exports_status_indicator, self.exports_status_label)
+

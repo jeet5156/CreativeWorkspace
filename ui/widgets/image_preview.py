@@ -52,15 +52,32 @@ class ImagePreview(QLabel):
             self.clear()
             return
 
-        # Decode from the file on every load. QPixmap(filename) can reuse a
-        # cached image when a snapshot is replaced at the same path.
-        pixmap = QPixmap.fromImage(QImage(str(path)))
+        from PySide6.QtGui import QImageReader
 
-        if pixmap.isNull():
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        size = reader.size()
+
+        if not size.isValid():
             self.clear()
             return
 
-        self._pixmap = pixmap
+        w, h = size.width(), size.height()
+        est_mb = (w * h * 4) / (1024 * 1024)
+        if est_mb > 256.0:
+            print(f"[IMAGE PREVIEW] Skipping oversized image (>256MB decoding limit): {path} ({w}x{h}, est. {est_mb:.1f} MB)")
+            self.clear()
+            return
+
+        target_size = size.scaled(self.size() if self.size().width() > 10 else QSize(400, 300), Qt.KeepAspectRatio)
+        reader.setScaledSize(target_size)
+        img = reader.read()
+
+        if img.isNull():
+            self.clear()
+            return
+
+        self._pixmap = QPixmap.fromImage(img)
         self._update_pixmap()
 
     def clear(self):
