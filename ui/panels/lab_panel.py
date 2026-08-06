@@ -5,8 +5,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QFrame,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QInputDialog,
+    QMessageBox,
 )
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction
 
 from ui.widgets.infinite_canvas import InfiniteCanvas
 
@@ -18,7 +24,9 @@ class LabPanel(QWidget):
         super().__init__()
         self._context = context
         self._current_project = None
+        self._current_board_id = None
         self._current_board_name = "Main"
+        self._sidebar_visible = True
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -59,6 +67,12 @@ class LabPanel(QWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
         header_layout.setSpacing(8)
+
+        # Toggle Sidebar Button
+        self.toggle_sidebar_btn = QPushButton("📋 Boards")
+        self.toggle_sidebar_btn.setToolTip("Toggle Boards Sidebar")
+        self.toggle_sidebar_btn.clicked.connect(self._toggle_sidebar)
+        header_layout.addWidget(self.toggle_sidebar_btn)
 
         title_label = QLabel("🧪 <b>Creative Lab</b>")
         header_layout.addWidget(title_label)
@@ -108,10 +122,92 @@ class LabPanel(QWidget):
         main_layout.addWidget(header)
 
         # ---------------------------------------------------------------------
-        # Infinite Canvas
+        # Body Container (Left Boards Sidebar + Right Infinite Canvas)
         # ---------------------------------------------------------------------
+        body_widget = QWidget()
+        body_layout = QHBoxLayout(body_widget)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+
+        # Left Boards Sidebar
+        self.sidebar_frame = QFrame()
+        self.sidebar_frame.setFixedWidth(220)
+        self.sidebar_frame.setStyleSheet("""
+            QFrame {
+                background-color: #171922;
+                border-right: 1px solid #2E3342;
+            }
+            QLabel {
+                color: #94A3B8;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QListWidget {
+                background-color: transparent;
+                border: none;
+                color: #CBD5E1;
+                font-size: 12px;
+            }
+            QListWidget::item {
+                padding: 6px 10px;
+                border-radius: 4px;
+                margin: 2px 4px;
+            }
+            QListWidget::item:hover {
+                background-color: #232736;
+                color: #F1F5F9;
+            }
+            QListWidget::item:selected {
+                background-color: #312E81;
+                color: #A5B4FC;
+                font-weight: bold;
+            }
+        """)
+
+        sidebar_layout = QVBoxLayout(self.sidebar_frame)
+        sidebar_layout.setContentsMargins(6, 8, 6, 8)
+        sidebar_layout.setSpacing(6)
+
+        # Sidebar Header Row
+        sb_header_layout = QHBoxLayout()
+        sb_title = QLabel("PROJECT BOARDS")
+        sb_header_layout.addWidget(sb_title)
+        sb_header_layout.addStretch()
+
+        self.add_board_btn = QPushButton("➕ New")
+        self.add_board_btn.setToolTip("Create New Board")
+        self.add_board_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #282B37;
+                color: #A5B4FC;
+                border: 1px solid #343847;
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #343847;
+                color: #FFFFFF;
+            }
+        """)
+        self.add_board_btn.clicked.connect(self._on_create_board_clicked)
+        sb_header_layout.addWidget(self.add_board_btn)
+        sidebar_layout.addLayout(sb_header_layout)
+
+        # Boards List Widget
+        self.boards_list = QListWidget()
+        self.boards_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.boards_list.customContextMenuRequested.connect(self._show_sidebar_context_menu)
+        self.boards_list.itemClicked.connect(self._on_sidebar_item_clicked)
+        sidebar_layout.addWidget(self.boards_list)
+
+        body_layout.addWidget(self.sidebar_frame)
+
+        # Infinite Canvas
         self.canvas = InfiniteCanvas(self)
-        main_layout.addWidget(self.canvas)
+        body_layout.addWidget(self.canvas)
+
+        main_layout.addWidget(body_widget)
 
         # Connect canvas signals
         self.canvas.camera_changed.connect(self._on_camera_changed)
@@ -119,6 +215,7 @@ class LabPanel(QWidget):
         self.canvas.node_added.connect(self._on_node_changed)
         self.canvas.node_modified.connect(self._on_node_changed)
         self.canvas.node_removed.connect(self._on_node_changed)
+        self.canvas.selection_changed.connect(self._on_selection_changed)
 
         # Connect toolbar button actions
         self.zoom_out_btn.clicked.connect(self.canvas.zoom_out)
@@ -142,26 +239,253 @@ class LabPanel(QWidget):
         self._context = context
         self._update_canvas_context()
 
-    def show_project(self, project, board_name: str = "Main"):
+    def _toggle_sidebar(self):
+        self._sidebar_visible = not self._sidebar_visible
+        self.sidebar_frame.setVisible(self._sidebar_visible)
+
+    def flush_pending_saves(self):
+        """Synchronously flush any pending debounced items or viewport saves."""
+        if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
+            return
+
+        if hasattr(self, "_item_save_timer") and self._item_save_timer.isActive():
+            self._item_save_timer.stop()
+            self._persist_items()
+
+        if hasattr(self, "_save_timer") and self._save_timer.isActive():
+            self._save_timer.stop()
+            self._persist_viewport()
+
+    def show_project(self, project, board_id: str = None, board_name: str = None):
+        if not project:
+            return
+
+        # 1. Flush pending saves for previous project & board BEFORE changing references
+        self.flush_pending_saves()
+
+        # 2. Update current project reference
         self._current_project = project
-        self._current_board_name = board_name
-        self.board_label.setText(f"— {board_name} Canvas")
         self._update_canvas_context()
 
         if not self._context or not getattr(self._context, "lab_service", None):
             return
 
+        lab_svc = self._context.lab_service
+        target_board = board_id or board_name
+
+        # Resolve active board ID from manifest if none provided
+        if not target_board:
+            target_board = lab_svc.get_active_board_id(project)
+
+        if not target_board:
+            manifest = lab_svc.get_manifest(project)
+            target_board = manifest.get("active_board_id")
+
+        self._switch_to_board(target_board)
+
+    def _switch_to_board(self, board_id: str):
+        """Single canonical board switching pipeline used across all navigation entry points."""
+        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+            return
+
+        lab_svc = self._context.lab_service
+
+        # 1. Flush pending saves of previous board
+        self.flush_pending_saves()
+
+        # 2. Persist viewport of previous board
+        self._persist_viewport()
+
+        # 3. Resolve target entry and set current board ID/name
+        entry = lab_svc.get_board_entry(self._current_project, board_id)
+        if not entry:
+            boards = lab_svc.list_boards(self._current_project)
+            entry = boards[0] if boards else None
+
+        if entry:
+            self._current_board_id = entry["id"]
+            self._current_board_name = entry["name"]
+            self.board_label.setText(f"— {self._current_board_name} Canvas")
+
+        if self._current_board_id:
+            lab_svc.set_active_board_id(self._current_project, self._current_board_id)
+
+        self._is_switching_board = True
+        self._is_loading = True
         try:
-            board_data = self._context.lab_service.load_board(project, board_name=board_name)
+            # 4. Clear canvas nodes
+            was_blocked = self.canvas.signalsBlocked()
+            self.canvas.blockSignals(True)
+            try:
+                self.canvas.clear_nodes()
+            finally:
+                self.canvas.blockSignals(was_blocked)
+
+            # 5. Load target board data
+            board_data = lab_svc.load_board(self._current_project, self._current_board_id)
+
+            # 6. Restore viewport
             viewport = board_data.get("viewport", {})
             self.canvas.set_viewport_state(viewport)
 
-            # Clear and load spatial nodes into scene
-            self.canvas.clear_nodes()
-            for item_data in board_data.get("items", []):
-                self.canvas.add_node(item_data)
-        except Exception:
-            pass
+            # Load nodes into scene
+            disk_items = board_data.get("items", [])
+            self.canvas.blockSignals(True)
+            try:
+                for item_data in disk_items:
+                    self.canvas.add_node(item_data)
+            finally:
+                self.canvas.blockSignals(was_blocked)
+
+            # 7. Restore selection state / clear inspector
+            if getattr(self._context, "inspector_panel", None):
+                try:
+                    self._context.inspector_panel.inspect(None)
+                except Exception:
+                    pass
+
+            # 8 & 9. Update UI sidebar selection and board label
+            self._refresh_boards_sidebar()
+        finally:
+            self._is_loading = False
+            self._is_switching_board = False
+
+    def _refresh_boards_sidebar(self):
+        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+            return
+
+        lab_svc = self._context.lab_service
+        boards = lab_svc.list_boards(self._current_project)
+
+        self.boards_list.blockSignals(True)
+        self.boards_list.clear()
+
+        active_item = None
+        for b in boards:
+            item = QListWidgetItem(f"📋 {b['name']}")
+            item.setData(Qt.UserRole, b["id"])
+            item.setData(Qt.UserRole + 1, b["name"])
+            self.boards_list.addItem(item)
+
+            if b["id"] == self._current_board_id:
+                active_item = item
+
+        if active_item:
+            self.boards_list.setCurrentItem(active_item)
+
+        self.boards_list.blockSignals(False)
+
+    def _on_sidebar_item_clicked(self, item: QListWidgetItem):
+        if not item:
+            return
+        board_id = item.data(Qt.UserRole)
+        if board_id and board_id != self._current_board_id:
+            self._switch_to_board(board_id)
+
+    def _on_create_board_clicked(self):
+        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+            return
+
+        name, ok = QInputDialog.getText(self, "New Board", "Enter board name:", text="Untitled Board")
+        if ok and name.strip():
+            lab_svc = self._context.lab_service
+            new_entry = lab_svc.create_board(self._current_project, name.strip())
+            if new_entry:
+                self._switch_to_board(new_entry["id"])
+
+    def _show_sidebar_context_menu(self, pos):
+        item = self.boards_list.itemAt(pos)
+        if not item:
+            return
+
+        board_id = item.data(Qt.UserRole)
+        board_name = item.data(Qt.UserRole + 1)
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #202334;
+                color: #F1F5F9;
+                border: 1px solid #313652;
+            }
+            QMenu::item:selected {
+                background-color: #312E81;
+                color: #A5B4FC;
+            }
+        """)
+
+        switch_act = QAction("Open Board", self)
+        rename_act = QAction("✏️ Rename Board", self)
+        dup_act = QAction("📋 Duplicate Board", self)
+        delete_act = QAction("🗑️ Delete Board", self)
+
+        switch_act.triggered.connect(lambda: self._switch_to_board(board_id))
+        rename_act.triggered.connect(lambda: self._on_rename_board(board_id, board_name))
+        dup_act.triggered.connect(lambda: self._on_duplicate_board(board_id))
+        delete_act.triggered.connect(lambda: self._on_delete_board(board_id, board_name))
+
+        menu.addAction(switch_act)
+        menu.addSeparator()
+        menu.addAction(rename_act)
+        menu.addAction(dup_act)
+        menu.addSeparator()
+        menu.addAction(delete_act)
+
+        menu.exec(self.boards_list.mapToGlobal(pos))
+
+    def _on_rename_board(self, board_id: str, current_name: str):
+        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+            return
+
+        new_name, ok = QInputDialog.getText(self, "Rename Board", "Enter new board name:", text=current_name)
+        if ok and new_name.strip():
+            lab_svc = self._context.lab_service
+            if lab_svc.rename_board(self._current_project, board_id, new_name.strip()):
+                if board_id == self._current_board_id:
+                    self._current_board_name = new_name.strip()
+                    self.board_label.setText(f"— {self._current_board_name} Canvas")
+                self._refresh_boards_sidebar()
+
+    def _on_duplicate_board(self, board_id: str):
+        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+            return
+
+        lab_svc = self._context.lab_service
+        new_entry = lab_svc.duplicate_board(self._current_project, board_id)
+        if new_entry:
+            self._switch_to_board(new_entry["id"])
+
+    def _on_delete_board(self, board_id: str, board_name: str):
+        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+            return
+
+        lab_svc = self._context.lab_service
+        boards = lab_svc.list_boards(self._current_project)
+
+        # Deletion Guard: Cannot delete the last board
+        if len(boards) <= 1:
+            QMessageBox.warning(
+                self,
+                "Cannot Delete Board",
+                "Cannot delete the final remaining board in a project."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Board",
+            f"Are you sure you want to delete board '{board_name}'?\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            # Delete board via LabService (which handles active board fallback if needed)
+            active_fallback = lab_svc.get_active_board_id(self._current_project)
+            if lab_svc.delete_board(self._current_project, board_id):
+                # Switch to newly set active board
+                new_active = lab_svc.get_active_board_id(self._current_project)
+                self._switch_to_board(new_active)
 
     def _update_canvas_context(self):
         from ui.lab.nodes.node_context import NodeContext
@@ -178,6 +502,8 @@ class LabPanel(QWidget):
         self.canvas.set_node_context(node_ctx)
 
     def _on_camera_changed(self, viewport_state: dict):
+        if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
+            return
         zoom_pct = int(viewport_state.get("zoom", 1.0) * 100)
         self.zoom_val_label.setText(f"{zoom_pct}%")
 
@@ -192,27 +518,52 @@ class LabPanel(QWidget):
         self.coords_label.setText(f"X: {int(x)}, Y: {int(y)}")
 
     def _on_node_changed(self, data=None):
-        if self._current_project:
-            self._item_save_timer.start()
+        if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
+            return
+        if not self._current_project:
+            return
+        self._item_save_timer.start()
+
+    def _on_selection_changed(self, selected_nodes: list):
+        if not self._context or not getattr(self._context, "inspector_panel", None):
+            return
+
+        inspector = self._context.inspector_panel
+        try:
+            if len(selected_nodes) == 1:
+                inspector.show_node(selected_nodes[0])
+            elif len(selected_nodes) > 1:
+                from core.inspectable_adapters import MultiNodeInspectable
+                adapter = MultiNodeInspectable(selected_nodes)
+                inspector.inspect(adapter)
+            else:
+                inspector.inspect(None)
+        except Exception:
+            pass
 
     def _toggle_grid(self):
         new_state = not self.canvas.is_grid_visible()
         self.canvas.set_grid_visible(new_state)
 
     def _persist_viewport(self):
+        if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
+            return
         if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
             return
         try:
             viewport = self.canvas.get_viewport_state()
-            self._context.lab_service.save_viewport(self._current_project, viewport, board_name=self._current_board_name)
+            self._context.lab_service.save_viewport(self._current_project, viewport, board_id_or_name=self._current_board_id or "Main")
         except Exception:
             pass
 
     def _persist_items(self):
+        if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
+            return
         if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
             return
         try:
             items_data = [item.to_dict() for item in self.canvas._items_map.values()]
-            self._context.lab_service.save_items(self._current_project, items_data, board_name=self._current_board_name)
+            self._context.lab_service.save_items(self._current_project, items_data, board_id_or_name=self._current_board_id or "Main")
         except Exception:
             pass
+

@@ -23,7 +23,6 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-
         self.context = AppContext()
 
         self.setWindowTitle("Creative Workspace")
@@ -108,7 +107,11 @@ class MainWindow(QMainWindow):
         # Handle files dropped from the OS into the explorer tree
         self.explorer.files_dropped.connect(self.on_files_dropped)
 
-        # Provide the workspace panel with app context so it can listen to asset changes
+        # Provide the workspace panel, explorer panel, and inspector panel with app context
+        self.context.main_window = self
+        self.context.inspector_panel = self.inspector
+        self.context.explorer_panel = self.explorer
+        self.explorer.set_context(self.context)
         self.workspace.set_context(self.context)
 
         # Set up WorkspaceManager and NavigationService
@@ -116,6 +119,7 @@ class MainWindow(QMainWindow):
             from ui.workspace_manager import WorkspaceManager
             from services.navigation_service import NavigationService
             self.workspace_manager = WorkspaceManager(self.workspace, self.context, None)
+            self.context.workspace_manager = self.workspace_manager
             # create navigation service and inject into workspace manager
             self.navigation_service = NavigationService(self.workspace_manager, self.explorer, self.context)
             # give workspace_manager a reference to navigation_service if it needs it
@@ -135,6 +139,7 @@ class MainWindow(QMainWindow):
             if self.navigation_service:
                 self.explorer.navigation_requested.connect(self.navigation_service.handle_navigation)
                 self.explorer.project_selected.connect(lambda p, s, r=None: self.navigation_service.navigate_project(p, s, rel_path=r))
+                self.explorer.client_selected.connect(self.on_client_selected)
                 # attach Explorer's search services (global search)
                 try:
                     self.explorer.set_search_services(self.workspace_manager.find_service, self.navigation_service, self.context.app_state)
@@ -231,6 +236,18 @@ class MainWindow(QMainWindow):
                 pass
         except Exception:
             pass
+
+    def on_client_selected(self, client):
+        if hasattr(self, "workspace_manager") and self.workspace_manager:
+            self.workspace_manager.show_module("clients")
+            client_panel = getattr(self.workspace_manager, "client_panel", None)
+            if client_panel and hasattr(client_panel, "show_client_dashboard"):
+                client_panel.show_client_dashboard(client)
+        if hasattr(self, "inspector") and self.inspector:
+            try:
+                self.inspector.show_client(client)
+            except Exception:
+                pass
 
     def on_workspace_import_finished(self, report):
         parts = []
@@ -342,7 +359,6 @@ class MainWindow(QMainWindow):
                 pass
         except Exception:
             pass
-        # continue with normal close
         super().closeEvent(event)
 
     def _restore_last_session(self):
@@ -468,8 +484,17 @@ class MainWindow(QMainWindow):
             self.context.project_service.all_projects()
         )
 
-    def project_selected(self, project, section, rel_path=None):
+        if getattr(self.context, "client_service", None):
+            try:
+                self.context.client_service.load_clients()
+                self.explorer.load_clients(self.context.client_service.list_clients())
+                if hasattr(self, "workspace_manager") and getattr(self.workspace_manager, "client_panel", None):
+                    if hasattr(self.workspace_manager.client_panel, "refresh"):
+                        self.workspace_manager.client_panel.refresh()
+            except Exception:
+                pass
 
+    def project_selected(self, project, section, rel_path=None):
         self.context.set_current_project(project)
 
         try:
@@ -496,9 +521,44 @@ class MainWindow(QMainWindow):
         self.workspace.show_section(project, section, rel_path=rel_path)
 
 
-    def new_project(self):
+    def register_and_open_project(self, project, client_id=None, section="dashboard"):
+        """Canonical project post-creation helper.
+        Assigns client, records in Recent Projects (settings.json), reloads Explorer tree,
+        selects project, and navigates to workspace.
+        """
+        if not project:
+            return
 
-        dialog = NewProjectDialog(self)
+        if client_id and getattr(self.context, "client_service", None):
+            project.client_id = client_id
+            self.context.project_service.save_project(project)
+            self.context.client_service.assign_project_to_client(
+                project.name, client_id, self.context.project_service
+            )
+
+        if getattr(self.context, "settings_service", None):
+            self.context.settings_service.add_recent_project(project.location)
+
+        if hasattr(self, "explorer") and self.explorer:
+            self.explorer.load_projects(self.context.project_service.all_projects())
+
+        self.project_selected(project, section)
+
+        if hasattr(self, "status") and self.status:
+            self.status.showMessage(
+                f"Project '{project.name}' created successfully.",
+                5000,
+            )
+
+    def new_project(self):
+        clients = []
+        if getattr(self.context, "client_service", None):
+            try:
+                clients = self.context.client_service.list_clients()
+            except Exception:
+                pass
+
+        dialog = NewProjectDialog(self, clients=clients)
 
         if not dialog.exec():
             return
@@ -511,20 +571,9 @@ class MainWindow(QMainWindow):
             dialog.snapshot_path,
         )
 
-        self.context.settings_service.add_recent_project(
-            project.location
-        )
+        client_id = dialog.get_selected_client_id()
+        self.register_and_open_project(project, client_id=client_id)
 
-        self.explorer.load_projects(
-            self.context.project_service.all_projects()
-        )
-
-        self.project_selected(project, "dashboard")
-
-        self.status.showMessage(
-            f"Project '{project.name}' created successfully.",
-            5000,
-        )
 
     def set_snapshot(self, project):
 

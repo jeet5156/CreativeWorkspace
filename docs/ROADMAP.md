@@ -1,49 +1,19 @@
-
-# Creative Workspace Roadmap
 # Creative Workspace Roadmap
 
-## ✅ Phase 1A
-- Dynamic Explorer folders
-
-## ✅ Phase 1B
-- Folder cards
-- Folder navigation
-
-## ✅ Phase 1C
+## ✅ Phase 1: Core Foundation & Asset Workspaces
+- Dynamic Explorer folders & Project hierarchy
+- Folder cards & deep folder navigation
 - Drag & Drop within Asset Workspace
+- Explorer drag & drop & re-ordering
 
-## 🔄 Phase 1D
-- Explorer drag & drop
+## 🧪 Phase 2: Creative Lab Engine
+- Infinite Canvas node architecture & data-driven NodeRegistry
+- Debounced board persistence & crash-resilient auto-save
+- Multi-node selection, frame sectioning, note & media cards
 
-## Planned
-- Breadcrumbs
-- Rename
-- Delete
-- Multi-select
-- Favorites
-- Tags
-- Search improvements
-- Undo / Redo
-
-## ✅ Phase 1A
-- Dynamic Explorer folders
-
-## ✅ Phase 1B
-- Folder cards
-- Folder navigation
-
-## ✅ Phase 1C
-- Drag & Drop within Asset Workspace
-
-## 🔄 Phase 1D
-- Explorer drag & drop
-
-## Planned
-- Breadcrumbs
-- Rename
-- Delete
-- Multi-select
-- Favorites
-- Tags
-- Search improvements
-- Undo / Redo
+## 🔮 Phase 3: Future Roadmap Workspaces
+- **Global Knowledge Workspace (Coming Soon)**: Central documentation & cross-project knowledge synthesis.
+- **Global Asset Library (Coming Soon)**: Multi-project tagging & cross-project asset discovery.
+- **Creative Inbox Workspace (Planned)**: Triage, staging, and creative reference collection.
+  > [!NOTE]
+  > Architectural Strategy: The Creative Inbox workspace will **reuse the existing Lab engine** (`InfiniteCanvas` & `NodeRegistry`) rather than introducing a separate canvas implementation.

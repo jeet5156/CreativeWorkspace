@@ -157,6 +157,7 @@ class ProjectService(QObject):
             status=data.get("status", "active"),
             tags=data.get("tags", []),
             client=data.get("client", ""),
+            client_id=data.get("client_id", ""),
             repository=data.get("repository", ""),
             deadline=data.get("deadline", ""),
             is_pinned=data.get("is_pinned", False),
@@ -178,4 +179,10 @@ class ProjectService(QObject):
         self.projects.clear()
 
     def all_projects(self):
-        return self.projects
+        return self.projects
+
+    def get_projects_for_client(self, client_id: str) -> list[Project]:
+        if not client_id:
+            return []
+        return [p for p in self.projects if getattr(p, "client_id", None) == client_id]
+

@@ -29,6 +29,9 @@ class Document:
         self.blocks.append(block)
         self.touch()
 
+    def add(self, block: Block):
+        self.append(block)
+
     def extend(self, blocks):
 
         self.blocks.extend(blocks)

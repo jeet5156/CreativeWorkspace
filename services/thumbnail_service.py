@@ -6,6 +6,12 @@ import hashlib
 import os
 
 
+DEBUG_LOGGING = False
+
+def log_debug(msg: str):
+    pass
+
+
 class _ThumbWorker(QRunnable):
     def __init__(self, service, project_location, rel_path, src_path, thumb_path, size, asset_id):
         super().__init__()
@@ -19,7 +25,7 @@ class _ThumbWorker(QRunnable):
 
     def run(self):
         try:
-            print(f"[THUMB] worker started: src_path={self.src_path}, asset_id={self.asset_id}")
+            log_debug(f"[THUMB] worker started: src_path={self.src_path}, asset_id={self.asset_id}")
             reader = QImageReader(str(self.src_path))
             reader.setAutoTransform(True)
 
@@ -32,7 +38,7 @@ class _ThumbWorker(QRunnable):
             est_mb = (w * h * 4) / (1024 * 1024)
 
             if est_mb > 256.0 or (w * h > 40000000):
-                print(f"[THUMBNAIL] Skipping oversized image (>256MB decoding limit): {self.src_path} ({w}x{h}, est. {est_mb:.1f} MB)")
+                log_debug(f"[THUMBNAIL] Skipping oversized image (>256MB decoding limit): {self.src_path} ({w}x{h}, est. {est_mb:.1f} MB)")
                 self.service._mark_failed(self.project_location, self.rel_path, reason="oversized", dimensions=(w, h), est_mb=est_mb)
                 return
 
@@ -46,7 +52,7 @@ class _ThumbWorker(QRunnable):
 
             self.thumb_path.parent.mkdir(parents=True, exist_ok=True)
             img.save(str(self.thumb_path), "JPEG", quality=85)
-            print(f"[THUMB] thumbnail written: thumb_path={self.thumb_path}")
+            log_debug(f"[THUMB] thumbnail written: thumb_path={self.thumb_path}")
 
             try:
                 self.service._update_index(self.project_location, self.rel_path, str(self.thumb_path), os.path.getmtime(self.src_path))
@@ -60,7 +66,7 @@ class _ThumbWorker(QRunnable):
 
             for sub_id in subscribers:
                 try:
-                    print(f"[THUMB] emitting callback: asset_id={sub_id}, thumb_path={self.thumb_path}")
+                    log_debug(f"[THUMB] emitting callback: asset_id={sub_id}, thumb_path={self.thumb_path}")
                     self.service.thumbnail_ready.emit(sub_id, str(self.thumb_path))
                 except Exception:
                     pass
@@ -183,7 +189,7 @@ class ThumbnailService(QObject):
                 return None
             try:
                 src_mtime = os.path.getmtime(src_path)
-                if float(entry.get("mtime", 0)) != float(src_mtime):
+                if abs(float(entry.get("mtime", 0)) - float(src_mtime)) > 0.01:
                     return None
             except Exception:
                 return None
@@ -231,7 +237,7 @@ class ThumbnailService(QObject):
             stack = traceback.extract_stack()
             caller = stack[-2] if len(stack) >= 2 else None
             caller_str = f"{Path(caller.filename).name}:{caller.lineno} in {caller.name}" if caller else "unknown"
-            print(f"[GEN_ASYNC_REC] received asset_id={asset_id}, caller={caller_str}, rel_path={rel_path}")
+            log_debug(f"[GEN_ASYNC_REC] received asset_id={asset_id}, caller={caller_str}, rel_path={rel_path}")
             # ensure size default
             if not size:
                 size = QSize(140, 160)

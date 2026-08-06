@@ -1,6 +1,6 @@
 import unittest
 
-from engines.document.blocks import Block
+from engines.document.blocks import Block, ParagraphBlock, HeadingBlock
 from engines.document.document import Document
 from engines.document.markdown_reader import MarkdownReader
 from engines.document.markdown_writer import MarkdownWriter
@@ -19,10 +19,7 @@ class TestDocument(unittest.TestCase):
 
         doc = Document()
 
-        block = Block(
-            block_type="paragraph",
-            content="Hello World"
-        )
+        block = ParagraphBlock(text="Hello World")
 
         doc.add(block)
 
@@ -33,10 +30,7 @@ class TestDocument(unittest.TestCase):
 
         doc = Document()
 
-        block = Block(
-            block_type="paragraph",
-            content="Delete me"
-        )
+        block = ParagraphBlock(text="Delete me")
 
         doc.add(block)
         doc.remove(block)
@@ -88,20 +82,9 @@ class TestMarkdown(unittest.TestCase):
 
         doc = Document()
 
-        doc.add(
-            Block(
-                block_type="heading",
-                content="Guardian",
-                properties={"level": 1}
-            )
-        )
+        doc.add(HeadingBlock(text="Guardian", level=1))
 
-        doc.add(
-            Block(
-                block_type="paragraph",
-                content="Ancient protector."
-            )
-        )
+        doc.add(ParagraphBlock(text="Ancient protector."))
 
         text = MarkdownWriter().save(doc)
 

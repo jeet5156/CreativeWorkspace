@@ -34,11 +34,42 @@ class WorkspaceManager:
         except Exception:
             self.lab_panel = None
 
-        # register placeholder modules first
-        self._register_module("clients", ModulePlaceholder("Clients", "Manage client records, contacts, and deliverables."))
-        self._register_module("assets_lib", ModulePlaceholder("Asset Library", "Global asset repository and tagging."))
-        self._register_module("knowledge", ModulePlaceholder("Knowledge", "Notes, docs, and knowledge base."))
-        self._register_module("business", ModulePlaceholder("Business", "Invoices, contracts, and financial tools."))
+        # Register Client Workspace Panel
+        try:
+            from ui.panels.client_workspace_panel import ClientWorkspacePanel
+            self.client_panel = ClientWorkspacePanel(self.context)
+            self._register_module("clients", self.client_panel)
+        except Exception:
+            self.client_panel = ModulePlaceholder("Clients", "Manage client records, contacts, and deliverables.")
+            self._register_module("clients", self.client_panel)
+
+        self._register_module(
+            "assets_lib",
+            ModulePlaceholder(
+                "Global Asset Library (Coming Soon)",
+                "Global asset repository, multi-project tagging, and cross-project asset discovery. This module will provide central asset indexing across all creative projects.",
+                badge="Coming Soon",
+                icon="📚"
+            )
+        )
+        self._register_module(
+            "knowledge",
+            ModulePlaceholder(
+                "Global Knowledge (Coming Soon)",
+                "Central documentation, creative notes, and knowledge base. This module will synthesize notes and documentation across all active projects.",
+                badge="Coming Soon",
+                icon="📖"
+            )
+        )
+        self._register_module(
+            "business",
+            ModulePlaceholder(
+                "Business Tools (Coming Soon)",
+                "Invoices, contracts, rates, and financial tools for creative projects and client management.",
+                badge="Coming Soon",
+                icon="💼"
+            )
+        )
 
         # FindService available for global search via Explorer
         self.find_service = FindService(context)
@@ -79,8 +110,16 @@ class WorkspaceManager:
             pass
 
     def show_project(self, project, section="dashboard", rel_path=None):
+        if not project:
+            return
         try:
-            # keep existing workspace logic
+            if self.context:
+                self.context.set_current_project(project)
+                if hasattr(self.context, "inspector_panel") and self.context.inspector_panel:
+                    try:
+                        self.context.inspector_panel.show_project(project)
+                    except Exception:
+                        pass
             self.workspace.show_section(project, section, rel_path=rel_path)
         except Exception:
             pass
@@ -105,6 +144,16 @@ class WorkspaceManager:
                     proj = getattr(self.context, "current_project", None)
                     if proj:
                         self.lab_panel.show_project(proj)
+                except Exception:
+                    pass
+            elif key == "clients" and getattr(self, "client_panel", None):
+                try:
+                    if hasattr(self.client_panel, "stack") and hasattr(self.client_panel, "dashboard_panel") and self.client_panel.stack.currentWidget() == self.client_panel.dashboard_panel:
+                        pass
+                    elif hasattr(self.client_panel, "show_clients_root_dashboard"):
+                        self.client_panel.show_clients_root_dashboard()
+                    elif hasattr(self.client_panel, "refresh"):
+                        self.client_panel.refresh()
                 except Exception:
                     pass
             self.workspace.stack.setCurrentWidget(w)

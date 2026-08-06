@@ -15,13 +15,20 @@ from ui.widgets.image_preview import ImagePreview
 
 class NewProjectDialog(QDialog):
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        parent=None,
+        clients=None,
+        preselected_client_id: str = None,
+        lock_client: bool = False,
+    ):
         super().__init__(parent)
 
         self.setWindowTitle("New Project")
-        self.resize(760, 520)
+        self.resize(760, 560)
 
         self.snapshot_path = ""
+        self.clients = clients or []
 
         # --------------------------------------------------
         # Project Name
@@ -29,6 +36,27 @@ class NewProjectDialog(QDialog):
 
         self.name_label = QLabel("Project Name")
         self.name_edit = QLineEdit()
+
+        # --------------------------------------------------
+        # Client Field
+        # --------------------------------------------------
+
+        self.client_label = QLabel("Client")
+        self.client_combo = QComboBox()
+        self.client_combo.addItem("None", "")
+
+        for c in self.clients:
+            c_name = getattr(c, "name", "Untitled Client")
+            c_id = getattr(c, "id", "")
+            self.client_combo.addItem(c_name, c_id)
+
+        if preselected_client_id:
+            idx = self.client_combo.findData(preselected_client_id)
+            if idx >= 0:
+                self.client_combo.setCurrentIndex(idx)
+
+        if lock_client:
+            self.client_combo.setEnabled(False)
 
         # --------------------------------------------------
         # Project Type
@@ -64,7 +92,7 @@ class NewProjectDialog(QDialog):
         self.description_label = QLabel("Description")
 
         self.description_edit = QTextEdit()
-        self.description_edit.setMinimumHeight(180)
+        self.description_edit.setMinimumHeight(140)
 
         # --------------------------------------------------
         # Snapshot
@@ -95,6 +123,9 @@ class NewProjectDialog(QDialog):
         left_layout.addWidget(self.name_label)
         left_layout.addWidget(self.name_edit)
 
+        left_layout.addWidget(self.client_label)
+        left_layout.addWidget(self.client_combo)
+
         left_layout.addWidget(self.type_label)
         left_layout.addWidget(self.type_combo)
 
@@ -103,6 +134,7 @@ class NewProjectDialog(QDialog):
 
         left_layout.addWidget(self.description_label)
         left_layout.addWidget(self.description_edit)
+
 
         # --------------------------------------------------
         # Middle Layout
@@ -188,3 +220,6 @@ class NewProjectDialog(QDialog):
 
         self.snapshot_path = ""
         self.snapshot_preview.clear()
+
+    def get_selected_client_id(self) -> str:
+        return str(self.client_combo.currentData() or "")

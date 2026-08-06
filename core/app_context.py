@@ -27,6 +27,13 @@ class AppContext:
         except Exception:
             self.lab_service = None
 
+        # Client service (Client management persistence & relationships)
+        try:
+            from services.client_service import ClientService
+            self.client_service = ClientService()
+        except Exception:
+            self.client_service = None
+
         # Thumbnail service (background generation & cache)
         try:
             from services.thumbnail_service import ThumbnailService
@@ -62,3 +69,10 @@ class AppContext:
             self.app_state.set_current_project(project)
         except Exception:
             pass
+
+    def load_workspace_clients(self, workspace_location: str):
+        if self.client_service:
+            try:
+                self.client_service.set_workspace_location(workspace_location)
+            except Exception:
+                pass

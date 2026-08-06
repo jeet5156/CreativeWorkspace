@@ -107,6 +107,12 @@ class InspectorPanel(QWidget):
                 context.project_service.project_updated.connect(self._on_project_service_updated)
             except Exception:
                 pass
+        if context and getattr(context, "client_service", None):
+            try:
+                context.client_service.client_updated.connect(self._on_client_service_updated)
+                context.client_service.client_deleted.connect(self._on_client_service_deleted)
+            except Exception:
+                pass
 
     def _execute_pending_save(self):
         if self._pending_save_action:
@@ -120,10 +126,6 @@ class InspectorPanel(QWidget):
     def _schedule_save(self, action):
         self._pending_save_action = action
         self._save_timer.start(500)
-
-    # -------------------------------------------------------------------------
-    # Core API: Inspect any InspectableObject
-    # -------------------------------------------------------------------------
 
     def inspect(self, inspectable: InspectableObject):
         self._current_inspectable = inspectable
@@ -211,6 +213,43 @@ class InspectorPanel(QWidget):
 
         self.content_layout.addStretch()
 
+    def inspect_object(self, inspectable: InspectableObject):
+        self.inspect(inspectable)
+
+    def clear_inspection(self):
+        self.inspect(None)
+
+    def show_client(self, client):
+        if not client:
+            self.inspect(None)
+            return
+        client_svc = getattr(self._context, "client_service", None) if self._context else None
+        proj_svc = getattr(self._context, "project_service", None) if self._context else None
+        from core.inspectable_adapters import ClientInspectable
+        inspectable = ClientInspectable(
+            client,
+            client_service=client_svc,
+            project_service=proj_svc,
+            on_updated_callback=self._on_client_updated_callback,
+        )
+        self.inspect(inspectable)
+
+    def _on_client_updated_callback(self, client):
+        if self._current_inspectable and hasattr(self._current_inspectable, "client") and getattr(self._current_inspectable, "client", None) == client:
+            self.header_title.setText(f"{self._current_inspectable.get_display_icon()}  {client.name}")
+
+    def _on_client_service_updated(self, client):
+        if self._current_inspectable and hasattr(self._current_inspectable, "client"):
+            c = getattr(self._current_inspectable, "client", None)
+            if c and c.id == getattr(client, "id", None):
+                self.header_title.setText(f"{self._current_inspectable.get_display_icon()}  {client.name}")
+
+    def _on_client_service_deleted(self, client_id):
+        if self._current_inspectable and hasattr(self._current_inspectable, "client"):
+            c = getattr(self._current_inspectable, "client", None)
+            if c and c.id == client_id:
+                self.clear_inspection()
+
     # -------------------------------------------------------------------------
     # Backward-Compatibility Adapters
     # -------------------------------------------------------------------------
@@ -223,6 +262,7 @@ class InspectorPanel(QWidget):
         inspectable = ProjectInspectable(
             project,
             project_service=proj_service,
+            client_service=getattr(self._context, "client_service", None) if self._context else None,
             on_updated_callback=self._on_project_updated,
         )
         self.inspect(inspectable)

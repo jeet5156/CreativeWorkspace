@@ -1,0 +1,17 @@
+{
+    "name": "TargetProj",
+    "project_type": "game",
+    "location": "TargetProj",
+    "description": "Target",
+    "priority": "medium",
+    "status": "active",
+    "tags": [],
+    "client": "",
+    "client_id": "",
+    "repository": "",
+    "deadline": "",
+    "is_pinned": false,
+    "created": "2026-08-06T14:08:48.422216",
+    "modified": "2026-08-06T14:08:48.643331",
+    "last_opened": "2026-08-06T14:08:48.643331"
+}

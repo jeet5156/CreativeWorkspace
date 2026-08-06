@@ -28,10 +28,10 @@ class TestLabService(unittest.TestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_default_board_creation(self):
-        """Verify that loading a board creates the Lab/boards/Main.lab.json file with valid schema."""
+        """Verify that loading a board creates the board file with valid schema."""
         board_data = self.lab_service.load_board(self.project, board_name="Main")
 
-        expected_file = Path(self.project_dir) / "Lab" / "boards" / "Main.lab.json"
+        expected_file = self.lab_service.get_board_path(self.project, "Main")
         self.assertTrue(expected_file.exists())
 
         self.assertEqual(board_data["version"], "1.0")
@@ -63,8 +63,9 @@ class TestLabService(unittest.TestCase):
 
     def test_custom_board_name(self):
         """Verify creating a custom board name under Lab/boards/."""
-        data = self.lab_service.load_board(self.project, board_name="Moodboard")
-        expected_file = Path(self.project_dir) / "Lab" / "boards" / "Moodboard.lab.json"
+        b_entry = self.lab_service.create_board(self.project, "Moodboard")
+        data = self.lab_service.load_board(self.project, b_entry["id"])
+        expected_file = self.lab_service.get_board_path(self.project, b_entry["id"])
         self.assertTrue(expected_file.exists())
         self.assertEqual(data["name"], "Moodboard")
 

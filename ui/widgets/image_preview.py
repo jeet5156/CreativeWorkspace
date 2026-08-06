@@ -65,7 +65,6 @@ class ImagePreview(QLabel):
         w, h = size.width(), size.height()
         est_mb = (w * h * 4) / (1024 * 1024)
         if est_mb > 256.0:
-            print(f"[IMAGE PREVIEW] Skipping oversized image (>256MB decoding limit): {path} ({w}x{h}, est. {est_mb:.1f} MB)")
             self.clear()
             return
 

@@ -96,6 +96,7 @@ class WorkspacePanel(QWidget):
         """Show dashboard when section is 'dashboard'; otherwise the workspace view for that section.
         Reset state when switching projects so dashboard is always shown for project root.
         """
+
         # If no project provided, show home
         if project is None:
             self.show_home()

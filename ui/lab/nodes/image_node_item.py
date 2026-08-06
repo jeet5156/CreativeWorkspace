@@ -15,8 +15,7 @@ DEBUG_LOGGING = False
 
 
 def log_debug(msg: str):
-    if DEBUG_LOGGING:
-        print(msg)
+    pass
 
 
 class ImageNodeState(Enum):
@@ -60,8 +59,22 @@ class ImageNodeItem(NodeItem):
     def project_location(self):
         return self._project_location or (self.node_context.project_location if hasattr(self, "node_context") and self.node_context else None)
 
+    def _normalize_image_path(self):
+        curr_path = self.payload.get("image_path")
+        proj_loc = self.project_location
+        if curr_path and proj_loc:
+            try:
+                abs_p = Path(curr_path)
+                if abs_p.is_absolute() and abs_p.exists():
+                    proj_root = Path(proj_loc).resolve()
+                    if proj_root in abs_p.parents or proj_root == abs_p:
+                        self.payload["image_path"] = str(abs_p.relative_to(proj_root)).replace("\\", "/")
+            except Exception:
+                pass
+
     def set_node_context(self, context):
         super().set_node_context(context)
+        self._normalize_image_path()
         if self.thumb_service and not getattr(self, "_connected_thumb_signal", False):
             try:
                 self.thumb_service.thumbnail_ready.connect(self._on_thumbnail_ready)
@@ -78,6 +91,7 @@ class ImageNodeItem(NodeItem):
                 self.node_context.thumbnail_service = thumbnail_service
             if project_location:
                 self.node_context.project_location = project_location
+        self._normalize_image_path()
         if self.thumb_service and not getattr(self, "_connected_thumb_signal", False):
             try:
                 self.thumb_service.thumbnail_ready.connect(self._on_thumbnail_ready)

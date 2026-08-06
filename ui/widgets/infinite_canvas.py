@@ -2,8 +2,10 @@ import math
 import uuid
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QMenu
 from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QPoint
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QAction
 
+from core.canvas_clipboard import CanvasClipboard
+from core.canvas_command import CanvasCommand
 from ui.lab.nodes.node_definition import NodeDefinition
 from ui.lab.nodes.node_capability import NodeCapability
 from ui.lab.nodes.node_item import NodeItem
@@ -23,6 +25,7 @@ class InfiniteCanvas(QGraphicsView):
     node_added = Signal(dict)
     node_modified = Signal(dict)
     node_removed = Signal(str)
+    selection_changed = Signal(list)
 
     # Aliases for backward compatibility
     card_added = node_added
@@ -43,8 +46,13 @@ class InfiniteCanvas(QGraphicsView):
         # Shared Node Context for all spatial items
         self.node_context = NodeContext()
 
+        # Canvas Clipboard subsystem instance
+        self.clipboard = CanvasClipboard()
+        self._last_context_scene_pos = None
+
         # Internal node dictionary: node_id -> NodeItem
         self._items_map = {}
+        self._is_loading = False
 
         # Viewport rendering flags
         self.setRenderHint(QPainter.Antialiasing)
@@ -56,6 +64,10 @@ class InfiniteCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setBackgroundBrush(QBrush(QColor("#1A1C23")))
+        self.setDragMode(QGraphicsView.RubberBandDrag)
+
+        # Connect scene selection changes to canvas signal
+        self._scene.selectionChanged.connect(self._on_scene_selection_changed)
 
         # State
         self._zoom_level = 1.0
@@ -158,11 +170,19 @@ class InfiniteCanvas(QGraphicsView):
     # Panning & Mouse Interactions
     # -------------------------------------------------------------------------
 
+    def _on_scene_selection_changed(self):
+        selected = self.selected_nodes()
+        try:
+            self.selection_changed.emit(selected)
+        except Exception:
+            pass
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and self._space_pressed):
             self._is_panning = True
             self._pan_start = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
+            self.setDragMode(QGraphicsView.NoDrag)
             event.accept()
             return
         super().mousePressEvent(event)
@@ -201,6 +221,19 @@ class InfiniteCanvas(QGraphicsView):
 
     def mouseReleaseEvent(self, event):
         from ui.lab.nodes.frame_node_item import FrameNodeItem
+
+        # Check drop attachment onto Frame nodes
+        selected = self.selected_nodes()
+        if selected:
+            for node in selected:
+                if not isinstance(node, FrameNodeItem):
+                    node_center = node.sceneBoundingRect().center()
+                    for item in self._items_map.values():
+                        if isinstance(item, FrameNodeItem):
+                            if item.sceneBoundingRect().contains(node_center):
+                                item.attach_node(node)
+                                break
+
         for item in self._items_map.values():
             if isinstance(item, FrameNodeItem) and item._is_drag_hovered:
                 item._is_drag_hovered = False
@@ -209,26 +242,120 @@ class InfiniteCanvas(QGraphicsView):
         if self._is_panning:
             self._is_panning = False
             self.setCursor(Qt.OpenHandCursor if self._space_pressed else Qt.ArrowCursor)
+            self.setDragMode(QGraphicsView.RubberBandDrag)
             event.accept()
             self._emit_camera_changed()
             return
         super().mouseReleaseEvent(event)
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
-            self._space_pressed = True
-            if not self._is_panning:
-                self.setCursor(Qt.OpenHandCursor)
-            event.accept()
-            return
-        elif event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-            self.delete_selected_nodes()
-            event.accept()
-            return
-        super().keyPressEvent(event)
+    def execute_command(self, command, **kwargs):
+        """Single command dispatcher for spatial canvas operations.
+        Establishes command architecture foundation for future Undo/Redo stack integration.
+        """
+        # TODO: Push command to undo stack.
 
-    def delete_selected_nodes(self):
+        cmd_val = command.value if isinstance(command, CanvasCommand) else str(command).lower()
+
+        if cmd_val == CanvasCommand.COPY.value:
+            return self.copy_selection()
+        elif cmd_val == CanvasCommand.PASTE.value:
+            mouse_pos = kwargs.get("mouse_pos") or self._last_context_scene_pos
+            return self.paste(mouse_pos=mouse_pos)
+        elif cmd_val == CanvasCommand.DUPLICATE.value:
+            return self.duplicate_selection()
+        elif cmd_val == CanvasCommand.DELETE.value:
+            return self.delete_selection()
+        elif cmd_val == CanvasCommand.SELECT_ALL.value:
+            return self.select_all()
+        elif cmd_val == CanvasCommand.CLEAR_SELECTION.value:
+            return self.clear_selection()
+        return None
+
+    def copy_selection(self):
+        """Serialize currently selected nodes into CanvasClipboard with Figma-style frame rules."""
         selected = self.selected_nodes()
+        if not selected:
+            return
+        from services.frame_service import FrameService
+        prepared_nodes = FrameService.prepare_clipboard_nodes(selected)
+        self.clipboard.copy(prepared_nodes)
+
+    def paste(self, mouse_pos: QPointF = None) -> list:
+        """Deserialize nodes from CanvasClipboard, assign fresh UUIDs, apply offset, and select pasted nodes."""
+        if not self.clipboard.has_content():
+            return []
+
+        nodes_data = self.clipboard.get_nodes()
+        paste_count = self.clipboard.increment_paste_count()
+        offset = 20.0 * paste_count
+
+        centroid_offset_x = 0.0
+        centroid_offset_y = 0.0
+        if mouse_pos and nodes_data:
+            xs = []
+            ys = []
+            for n in nodes_data:
+                t = n.get("transform", {})
+                if isinstance(t, dict):
+                    x = float(t.get("x", 0.0))
+                    y = float(t.get("y", 0.0))
+                    w = float(t.get("width", 200.0))
+                    h = float(t.get("height", 150.0))
+                    xs.extend([x, x + w])
+                    ys.extend([y, y + h])
+            if xs and ys:
+                center_x = (min(xs) + max(xs)) / 2.0
+                center_y = (min(ys) + max(ys)) / 2.0
+                centroid_offset_x = mouse_pos.x() - center_x
+                centroid_offset_y = mouse_pos.y() - center_y
+
+        pasted_nodes = []
+        old_to_new_id_map = {}
+        for node_data in nodes_data:
+            old_id = node_data.get("id")
+            new_id = str(uuid.uuid4())
+            node_data["id"] = new_id
+            if old_id:
+                old_to_new_id_map[old_id] = new_id
+
+            # Apply coordinate placement
+            transform = node_data.get("transform", {})
+            if isinstance(transform, dict):
+                orig_x = float(transform.get("x", 0.0))
+                orig_y = float(transform.get("y", 0.0))
+                if mouse_pos:
+                    transform["x"] = round(orig_x + centroid_offset_x + (offset - 20.0), 2)
+                    transform["y"] = round(orig_y + centroid_offset_y + (offset - 20.0), 2)
+                else:
+                    transform["x"] = round(orig_x + offset, 2)
+                    transform["y"] = round(orig_y + offset, 2)
+                node_data["transform"] = transform
+
+            node = self.add_node(node_data)
+            if node:
+                pasted_nodes.append(node)
+
+        if pasted_nodes:
+            from services.frame_service import FrameService
+            FrameService.remap_pasted_memberships(pasted_nodes, old_to_new_id_map)
+            # Transfer selection exclusively to newly pasted nodes and emit single selection_changed
+            self.set_selected_nodes(pasted_nodes)
+
+        return pasted_nodes
+
+    def duplicate_selection(self) -> list:
+        """Duplicate selected nodes by executing Copy -> Paste sequentially."""
+        selected = self.selected_nodes()
+        if not selected:
+            return []
+        self.copy_selection()
+        return self.paste()
+
+    def delete_selection(self):
+        """Single canonical deletion handler for selected canvas nodes."""
+        selected = self.selected_nodes()
+        if not selected:
+            return
         for node in selected:
             if getattr(node, "is_locked", False):
                 continue
@@ -238,6 +365,47 @@ class InfiniteCanvas(QGraphicsView):
                 except Exception:
                     pass
             self.remove_node(node.id)
+        self.clear_selection()
+
+    delete_selected_nodes = delete_selection
+
+    def keyPressEvent(self, event):
+        mods = event.modifiers()
+        key = event.key()
+
+        if mods & Qt.ControlModifier:
+            if key == Qt.Key_C:
+                self.execute_command(CanvasCommand.COPY)
+                event.accept()
+                return
+            elif key == Qt.Key_V:
+                self.execute_command(CanvasCommand.PASTE)
+                event.accept()
+                return
+            elif key == Qt.Key_D:
+                self.execute_command(CanvasCommand.DUPLICATE)
+                event.accept()
+                return
+            elif key == Qt.Key_A:
+                self.select_all()
+                event.accept()
+                return
+
+        if key == Qt.Key_Escape:
+            self.execute_command(CanvasCommand.CLEAR_SELECTION)
+            event.accept()
+            return
+        elif key == Qt.Key_Space and not event.isAutoRepeat():
+            self._space_pressed = True
+            if not self._is_panning:
+                self.setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        elif key in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.execute_command(CanvasCommand.DELETE)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
         if event.key() == Qt.Key_Space and not event.isAutoRepeat():
@@ -304,19 +472,23 @@ class InfiniteCanvas(QGraphicsView):
         if not node_data or not isinstance(node_data, dict):
             return None
 
-        # Extract type or legacy payload note_type
-        type_id = str(node_data.get("type", "")).lower()
-        if not type_id or type_id == "note":
-            payload = node_data.get("payload", {})
-            note_type = str(payload.get("note_type", "blank")).lower()
-            type_id = f"note.{note_type}"
+        node_type = node_data.get("type", "note.blank")
+        node = NodeRegistry.create_node(node_type, node_context=self.node_context)
+        if not node:
+            return None
 
-        # Delegate instantiation to NodeRegistry with standard NodeContext
-        node = NodeRegistry.create_node(type_id, node_data, node_context=self.node_context)
+        node.from_dict(node_data)
         node.node_modified.connect(self._on_node_item_modified)
 
-        self._scene.addItem(node)
         self._items_map[node.id] = node
+        self._scene.addItem(node)
+
+        # Emit node_added signal unless bulk loading
+        if not self._is_loading:
+            try:
+                self.node_added.emit(node.to_dict())
+            except Exception:
+                pass
         return node
 
     # Backward compatibility alias
@@ -325,6 +497,13 @@ class InfiniteCanvas(QGraphicsView):
     def remove_node(self, node_id: str):
         if node_id in self._items_map:
             node = self._items_map.pop(node_id)
+            from ui.lab.nodes.frame_node_item import FrameNodeItem
+            from services.frame_service import FrameService
+            if isinstance(node, FrameNodeItem):
+                FrameService.cleanup_frame_deletion(node, self)
+            else:
+                FrameService.cleanup_node_deletion(node_id, self._items_map)
+
             self._scene.removeItem(node)
             try:
                 self.node_removed.emit(node_id)
@@ -342,6 +521,19 @@ class InfiniteCanvas(QGraphicsView):
         return [it for it in self._scene.selectedItems() if isinstance(it, NodeItem)]
 
     selected_card_items = selected_nodes
+
+    def clear_selection(self):
+        self._scene.clearSelection()
+
+    def select_all(self):
+        for node in self._items_map.values():
+            node.setSelected(True)
+
+    def set_selected_nodes(self, nodes: list):
+        self._scene.clearSelection()
+        for node in nodes:
+            if hasattr(node, "setSelected"):
+                node.setSelected(True)
 
     def clear_nodes(self):
         for node_id, node in list(self._items_map.items()):
@@ -362,10 +554,15 @@ class InfiniteCanvas(QGraphicsView):
 
     def contextMenuEvent(self, event):
         scene_pos = self.mapToScene(event.pos())
+        self._last_context_scene_pos = scene_pos
         item = self.itemAt(event.pos())
 
         # If right-clicked on a spatial node item, display node context menu
         if isinstance(item, NodeItem):
+            # Ensure the right-clicked item is selected if not already part of selection
+            if not item.isSelected():
+                self.set_selected_nodes([item])
+
             menu = QMenu(self)
             menu.setStyleSheet("""
                 QMenu {
@@ -390,15 +587,76 @@ class InfiniteCanvas(QGraphicsView):
                 if not menu.isEmpty():
                     menu.addSeparator()
 
-            target_node_id = item.id
+            # Attach / Detach Frame submenus for spatial non-frame nodes
+            from ui.lab.nodes.frame_node_item import FrameNodeItem
+            from services.frame_service import FrameService
+            if not isinstance(item, FrameNodeItem):
+                all_frames = [it for it in self._items_map.values() if isinstance(it, FrameNodeItem)]
+                if all_frames:
+                    parent_id = item.payload.get("parent_frame_id") if hasattr(item, "payload") and isinstance(item.payload, dict) else None
+                    if not parent_id:
+                        attach_menu = menu.addMenu("🖼️  Attach to Frame")
+                        for frame_item in all_frames:
+                            title = str(frame_item.payload.get("title", "Section Frame"))
+                            act = QAction(f"🖼️ {title}", attach_menu)
+                            act.triggered.connect(lambda checked=False, f=frame_item, n=item: FrameService.attach_node(f, n))
+                            attach_menu.addAction(act)
+                    else:
+                        current_frame = next((f for f in all_frames if f.id == parent_id), None)
+                        detach_act = QAction("❌  Detach from Frame", self)
+                        detach_act.triggered.connect(lambda checked=False, f=current_frame, n=item: FrameService.detach_node(f, n) if f else None)
+                        menu.addAction(detach_act)
+
+                        other_frames = [f for f in all_frames if f.id != parent_id]
+                        if other_frames:
+                            move_menu = menu.addMenu("↔️  Move to Frame")
+                            for frame_item in other_frames:
+                                title = str(frame_item.payload.get("title", "Section Frame"))
+                                act = QAction(f"🖼️ {title}", move_menu)
+                                act.triggered.connect(lambda checked=False, cur=current_frame, target=frame_item, n=item: FrameService.move_node_to_frame(n, cur, target))
+                                move_menu.addAction(act)
+                    menu.addSeparator()
+
+            copy_act = QAction("📄  Copy", self)
+            copy_act.triggered.connect(lambda: self.execute_command(CanvasCommand.COPY))
+            menu.addAction(copy_act)
+
+            dup_act = QAction("👯  Duplicate", self)
+            dup_act.triggered.connect(lambda: self.execute_command(CanvasCommand.DUPLICATE))
+            menu.addAction(dup_act)
+
             del_action = QAction("🗑  Delete Node", self)
-            del_action.triggered.connect(lambda: self.remove_node(target_node_id))
+            del_action.triggered.connect(lambda: self.execute_command(CanvasCommand.DELETE))
             menu.addAction(del_action)
 
             menu.exec_(event.globalPos())
             return
 
         menu = NodeRegistry.build_context_menu(self, scene_pos, self._create_node_from_def)
+
+        # Prepend Canvas Edit Actions (Paste, Select All, Clear Selection)
+        paste_act = QAction("📋  Paste", self)
+        paste_act.setEnabled(self.clipboard.has_content())
+        paste_act.triggered.connect(lambda: self.execute_command(CanvasCommand.PASTE, mouse_pos=scene_pos))
+
+        select_all_act = QAction("🔲  Select All", self)
+        select_all_act.triggered.connect(lambda: self.execute_command(CanvasCommand.SELECT_ALL))
+
+        clear_sel_act = QAction("🚫  Clear Selection", self)
+        clear_sel_act.triggered.connect(lambda: self.execute_command(CanvasCommand.CLEAR_SELECTION))
+
+        actions = menu.actions()
+        if actions:
+            first_act = actions[0]
+            menu.insertAction(first_act, paste_act)
+            menu.insertAction(first_act, select_all_act)
+            menu.insertAction(first_act, clear_sel_act)
+            menu.insertSeparator(first_act)
+        else:
+            menu.addAction(paste_act)
+            menu.addAction(select_all_act)
+            menu.addAction(clear_sel_act)
+
         menu.exec_(event.globalPos())
 
     def _create_node_from_def(self, defn: NodeDefinition, scene_pos: QPointF):
@@ -427,7 +685,3 @@ class InfiniteCanvas(QGraphicsView):
         node = self.add_node(node_data)
         if node:
             node.setSelected(True)
-            try:
-                self.node_added.emit(node.to_dict())
-            except Exception:
-                pass

@@ -17,6 +17,17 @@ class Block:
     def type(self) -> str:
         return self.__class__.__name__.replace("Block", "").lower()
 
+    @property
+    def block_type(self) -> str:
+        return self.type
+
+    @property
+    def content(self) -> str:
+        return getattr(self, "text", getattr(self, "path", ""))
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
 
 # ==========================================================
 # Paragraph

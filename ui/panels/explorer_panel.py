@@ -18,12 +18,14 @@ ROLE_PROJECT = Qt.UserRole
 ROLE_SECTION = Qt.UserRole + 1
 ROLE_REL_PATH = Qt.UserRole + 2
 ROLE_NODE_TYPE = Qt.UserRole + 3
+ROLE_CLIENT = Qt.UserRole + 10
 
 
 class ExplorerPanel(QWidget):
 
     # Emits: (project, section, rel_path)
     project_selected = Signal(Project, str, object)
+    client_selected = Signal(object)
     # Navigation signal for top-level modules: emits a string key such as 'home', 'clients', 'assets_lib', 'knowledge', 'business'
     navigation_requested = Signal(str)
     set_snapshot_requested = Signal(Project)
@@ -139,8 +141,26 @@ class ExplorerPanel(QWidget):
                         self._project_updated_connected = True
                     except Exception:
                         pass
+            if context and getattr(context, 'client_service', None):
+                client_svc = context.client_service
+                if not getattr(self, '_client_signals_connected', False):
+                    try:
+                        client_svc.client_created.connect(lambda c: self._reload_clients_from_context())
+                        client_svc.client_updated.connect(lambda c: self._reload_clients_from_context())
+                        client_svc.client_deleted.connect(lambda cid: self._reload_clients_from_context())
+                        self._client_signals_connected = True
+                    except Exception:
+                        pass
+                self._reload_clients_from_context()
         except Exception:
             self._context = None
+
+    def _reload_clients_from_context(self):
+        if getattr(self, '_context', None) and getattr(self._context, 'client_service', None):
+            try:
+                self.load_clients(self._context.client_service.list_clients())
+            except Exception:
+                pass
 
     def _on_project_updated(self, project):
         if not project or not hasattr(self, '_project_cards'):
@@ -245,6 +265,24 @@ class ExplorerPanel(QWidget):
     def _on_tree_item_clicked(self, item: QTreeWidgetItem, column: int = 0):
         if not item:
             return
+
+        client_obj = item.data(0, ROLE_CLIENT)
+        if client_obj:
+            if getattr(self, '_context', None) and getattr(self._context, 'inspector_panel', None):
+                try:
+                    self._context.inspector_panel.show_client(client_obj)
+                except Exception:
+                    pass
+            try:
+                self.client_selected.emit(client_obj)
+            except Exception:
+                pass
+            try:
+                self.navigation_requested.emit("clients")
+            except Exception:
+                pass
+            return
+
         mod_key = item.data(0, Qt.UserRole + 1)
         if mod_key in ("home", "projects", "lab", "clients", "assets_lib", "knowledge", "business"):
             try:
@@ -436,47 +474,97 @@ class ExplorerPanel(QWidget):
 
         self.projects_root.setExpanded(True)
 
+    def load_clients(self, clients):
+        self.clients_root.takeChildren()
+
+        active_group = QTreeWidgetItem(["🟢 Active Clients"])
+        active_group.setData(0, ROLE_SECTION, "clients_group")
+
+        prospects_group = QTreeWidgetItem(["🟡 Prospects"])
+        prospects_group.setData(0, ROLE_SECTION, "clients_group")
+
+        archived_group = QTreeWidgetItem(["🔴 Archived"])
+        archived_group.setData(0, ROLE_SECTION, "clients_group")
+
+        self.clients_root.addChild(active_group)
+        self.clients_root.addChild(prospects_group)
+        self.clients_root.addChild(archived_group)
+
+        for client in clients:
+            status = str(getattr(client, "status", "Active")).lower()
+            name_str = f"🏢 {client.name}" if getattr(client, "name", None) else "🏢 Untitled Client"
+            item = QTreeWidgetItem([name_str])
+            item.setData(0, ROLE_CLIENT, client)
+
+            if status in ("prospect", "reached out"):
+                prospects_group.addChild(item)
+            elif status in ("archived", "completed"):
+                archived_group.addChild(item)
+            else:
+                active_group.addChild(item)
+
+        self.clients_root.setExpanded(True)
+        active_group.setExpanded(True)
+        prospects_group.setExpanded(True)
+
     def reveal_project(self, project, section: str = "dashboard", rel_path: str = None, emit: bool = True):
         """Programmatically select and reveal a project or specific subfolder in the tree.
         If rel_path is supplied, recursively locates matching node by ROLE_REL_PATH and selects it.
         If emit is True (default), emits project_selected(project, section, rel_path).
         """
-        for i in range(self.projects_root.childCount()):
-            proj_item = self.projects_root.child(i)
-            p = proj_item.data(0, Qt.UserRole)
+        if not project:
+            return
+
+        loc_key = str(getattr(project, "location", ""))
+        proj_item = None
+
+        if hasattr(self, "_project_items") and loc_key in self._project_items:
+            proj_item = self._project_items[loc_key]
+        else:
+            for i in range(self.projects_root.childCount()):
+                item = self.projects_root.child(i)
+                p = item.data(0, ROLE_PROJECT) or item.data(0, Qt.UserRole)
+                if p and str(getattr(p, "location", "")) == loc_key:
+                    proj_item = item
+                    break
+
+        if not proj_item:
+            return
+
+        try:
+            self.projects_root.setExpanded(True)
+            proj_item.setExpanded(True)
+            target_node = None
+
+            if rel_path:
+                self._ensure_path_expanded(proj_item, rel_path)
+                target_node = self._find_node_by_rel_path(proj_item, rel_path)
+
+            if target_node:
+                curr = target_node.parent()
+                while curr:
+                    curr.setExpanded(True)
+                    curr = curr.parent()
+                self.tree.setCurrentItem(target_node)
+                self.tree.scrollToItem(target_node)
+            else:
+                self.tree.setCurrentItem(proj_item)
+                self.tree.scrollToItem(proj_item)
+
+            self._update_project_card_selection(project)
+
             try:
-                if p and str(p.location) == str(project.location):
-                    proj_item.setExpanded(True)
-                    target_node = None
-
-                    if rel_path:
-                        self._ensure_path_expanded(proj_item, rel_path)
-                        target_node = self._find_node_by_rel_path(proj_item, rel_path)
-
-                    if target_node:
-                        curr = target_node.parent()
-                        while curr:
-                            curr.setExpanded(True)
-                            curr = curr.parent()
-                        self.tree.setCurrentItem(target_node)
-                    else:
-                        self.tree.setCurrentItem(proj_item)
-
-                    self._update_project_card_selection(project)
-
-                    try:
-                        self.search_results.setVisible(False)
-                    except Exception:
-                        pass
-
-                    if emit:
-                        try:
-                            self.project_selected.emit(project, section, rel_path if target_node else None)
-                        except Exception:
-                            pass
-                    return
+                self.search_results.setVisible(False)
             except Exception:
-                continue
+                pass
+
+            if emit:
+                try:
+                    self.project_selected.emit(project, section, rel_path if target_node else None)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def get_expansion_state(self) -> dict:
         """Return a serializable expansion state for explorer tree.
@@ -801,7 +889,7 @@ class ExplorerPanel(QWidget):
             if confirm == QMessageBox.Yes and getattr(self, '_context', None) and getattr(self._context, 'project_service', None):
                 self._context.project_service.delete_project(p)
                 self.clear_projects()
-                projects = self._context.project_service.list_projects()
+                projects = self._context.project_service.all_projects()
                 self.load_projects(projects)
         except Exception:
             pass

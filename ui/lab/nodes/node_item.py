@@ -96,9 +96,7 @@ class NodeItem(QGraphicsObject):
         pass
 
     def _log_state(self, stage: str):
-        pix = getattr(self, "_pixmap", None)
-        img_path = self.payload.get("image_path") if hasattr(self, "payload") and isinstance(self.payload, dict) else "N/A"
-        print(f"[NODE_MUTATION] {stage} | id(self)={id(self)}, node.id={getattr(self, 'id', 'N/A')}, img_path={img_path}, id(payload)={id(getattr(self, 'payload', None))}, id(_pixmap)={id(pix)}")
+        pass
 
     def on_property_changed(self, key: str, value):
         """Hook invoked when a payload or metadata property is mutated."""
@@ -189,7 +187,8 @@ class NodeItem(QGraphicsObject):
         if isinstance(transform, dict):
             x = float(transform.get("x", 0.0))
             y = float(transform.get("y", 0.0))
-            z = int(transform.get("z", 1))
+            default_z = getattr(self, "z_order", 1)
+            z = int(transform.get("z", default_z))
             self.width = float(transform.get("width", self.width))
             self.height = float(transform.get("height", self.height))
             rot = float(transform.get("rotation", 0.0))

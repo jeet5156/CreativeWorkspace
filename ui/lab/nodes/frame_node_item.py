@@ -1,24 +1,25 @@
 import os
-from typing import List
+from typing import List, Union
+from datetime import datetime
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget, QInputDialog, QMenu, QLineEdit
 from PySide6.QtCore import Qt, QRectF, QPointF
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont, QAction
 
 from ui.lab.nodes.node_item import NodeItem
 from ui.lab.nodes.node_definition import NodeDefinition
+from services.frame_service import FrameService, FRAME_PADDING, HEADER_HEIGHT, MIN_FRAME_WIDTH, MIN_FRAME_HEIGHT
 
 
 class FrameNodeItem(NodeItem):
-    """Lightweight organizational Frame node item for the Creative Lab canvas.
+    """Lightweight organizational Frame node container for the Creative Lab canvas.
 
-    Inspired by Unreal Engine Comment Boxes, Figma Sections, and Miro Frames.
-    Provides resizable, color-themed, collapse-expand container bounds. Membership is
-    determined purely geometrically without child parentage, enabling all current and
-    future node types to work seamlessly.
+    Inspired by Miro Section Frames, Unreal Engine Comment Boxes, and Figma Sections.
+    Delegates structural graph management to `FrameService` while handling UI rendering,
+    header styling, resizing, and user interaction.
     """
 
     CORNER_RADIUS = 12.0
-    HEADER_HEIGHT = 36.0
+    HEADER_HEIGHT = HEADER_HEIGHT
     HANDLE_SIZE = 14.0
 
     COLOR_THEMES = {
@@ -42,6 +43,13 @@ class FrameNodeItem(NodeItem):
             "badge_text": "#34D399",
             "surface_bg": "#172922",
             "border": "#22C55E",
+        },
+        "yellow": {
+            "accent": "#F59E0B",
+            "header_bg": "#3B2D1B",
+            "badge_text": "#FBBF24",
+            "surface_bg": "#2B251B",
+            "border": "#F59E0B",
         },
         "amber": {
             "accent": "#F59E0B",
@@ -72,13 +80,26 @@ class FrameNodeItem(NodeItem):
         self.setZValue(-10)  # Render beneath regular spatial nodes
         self.setAcceptHoverEvents(True)
 
-        # Ensure default payload attributes
+        # Standard Future-Proof Payload Attributes
+        now = datetime.now().isoformat()
         if "title" not in self.payload:
             self.payload["title"] = "Section Frame"
+        if "theme" not in self.payload:
+            self.payload["theme"] = self.payload.get("color_theme", "blue")
         if "color_theme" not in self.payload:
-            self.payload["color_theme"] = "purple"
+            self.payload["color_theme"] = self.payload["theme"]
+        if "locked" not in self.payload:
+            self.payload["locked"] = False
+        if "child_node_ids" not in self.payload or not isinstance(self.payload["child_node_ids"], list):
+            self.payload["child_node_ids"] = []
         if "collapsed" not in self.payload:
             self.payload["collapsed"] = False
+        if "visible_children" not in self.payload:
+            self.payload["visible_children"] = True
+        if "created" not in self.payload:
+            self.payload["created"] = now
+        if "modified" not in self.payload:
+            self.payload["modified"] = now
 
         self._expanded_height = float(self.height)
         self._is_moving = False
@@ -87,67 +108,116 @@ class FrameNodeItem(NodeItem):
         self._resize_start_pos = None
         self._resize_start_size = None
 
+    def from_dict(self, data: dict):
+        if isinstance(data, dict) and "transform" in data and isinstance(data["transform"], dict):
+            if "z" not in data["transform"]:
+                data["transform"]["z"] = -10
+        super().from_dict(data)
+        if self.zValue() >= 0:
+            self.setZValue(-10)
+
+        # Ensure schema completeness on reload
+        if "theme" not in self.payload:
+            self.payload["theme"] = self.payload.get("color_theme", "blue")
+        if "locked" not in self.payload:
+            self.payload["locked"] = False
+        if "child_node_ids" not in self.payload or not isinstance(self.payload["child_node_ids"], list):
+            self.payload["child_node_ids"] = []
+        if "collapsed" not in self.payload:
+            self.payload["collapsed"] = False
+        if "visible_children" not in self.payload:
+            self.payload["visible_children"] = True
+
     def get_theme_colors(self) -> dict:
-        theme_key = str(self.payload.get("color_theme", "purple")).lower()
-        return self.COLOR_THEMES.get(theme_key, self.COLOR_THEMES["purple"])
+        theme_key = str(self.payload.get("theme", self.payload.get("color_theme", "blue"))).lower()
+        return self.COLOR_THEMES.get(theme_key, self.COLOR_THEMES["blue"])
+
+    # -------------------------------------------------------------------------
+    # Centralized Membership API (Delegated to FrameService)
+    # -------------------------------------------------------------------------
+
+    def get_child_ids(self) -> List[str]:
+        """Return list of child node UUIDs attached to this frame."""
+        return list(self.payload.get("child_node_ids", []))
+
+    def attached_nodes(self) -> List[NodeItem]:
+        """Return list of live NodeItem instances attached to this frame via FrameService."""
+        return FrameService.get_attached_nodes(self)
 
     def contained_nodes(self) -> List[NodeItem]:
-        """Geometrically determine member nodes whose scene center falls within frame bounds."""
+        """Return attached nodes via FrameService."""
+        return self.attached_nodes()
+
+    def attach_node(self, target: Union[NodeItem, str]) -> bool:
+        """Attach node to this frame via FrameService."""
+        return FrameService.attach_node(self, target)
+
+    def detach_node(self, target: Union[NodeItem, str]) -> bool:
+        """Detach node from this frame via FrameService."""
+        return FrameService.detach_node(self, target)
+
+    def move_node_to_frame(self, target: Union[NodeItem, str], destination_frame: "FrameNodeItem") -> bool:
+        """Transfer node from this frame to destination frame via FrameService."""
+        return FrameService.move_node_to_frame(target, self, destination_frame)
+
+    def detach_all(self) -> bool:
+        """Detach all child nodes from this frame via FrameService."""
+        return FrameService.detach_all(self)
+
+    def select_all_children(self):
+        """Select all child nodes attached to this frame in the scene."""
         if not self.scene():
-            return []
-        frame_rect = self.sceneBoundingRect()
-        members = []
-        for item in self.scene().items():
-            if isinstance(item, NodeItem) and item is not self and not isinstance(item, FrameNodeItem):
-                item_center = item.sceneBoundingRect().center()
-                if frame_rect.contains(item_center):
-                    members.append(item)
-        return members
+            return
+        children = self.attached_nodes()
+        self.scene().clearSelection()
+        for child in children:
+            child.setSelected(True)
 
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionChange and self.isSelected() and not self._is_moving:
-            self._is_moving = True
-            try:
-                new_pos = value
-                current_pos = self.pos()
-                delta = new_pos - current_pos
-
-                # Move contained member nodes by matching delta
-                for member in self.contained_nodes():
-                    if not getattr(member, "is_locked", False):
-                        member.setPos(member.pos() + delta)
-            finally:
-                self._is_moving = False
-        return super().itemChange(change, value)
+    # -------------------------------------------------------------------------
+    # Frame Interactions & Capabilities
+    # -------------------------------------------------------------------------
 
     def set_color_theme(self, theme_name: str):
-        if theme_name in self.COLOR_THEMES:
-            self.payload["color_theme"] = theme_name
+        theme_key = theme_name.lower()
+        if theme_key in self.COLOR_THEMES:
+            self.payload["theme"] = theme_key
+            self.payload["color_theme"] = theme_key
             self._emit_modified()
             self.update()
 
-    def set_collapsed(self, collapsed: bool):
-        if bool(self.payload.get("collapsed")) == collapsed:
-            return
-
-        self.payload["collapsed"] = collapsed
-        if collapsed:
-            members = self.contained_nodes()
-            self._expanded_height = float(self.height)
-            self.height = self.HEADER_HEIGHT
-            for member in members:
-                member.setVisible(False)
-        else:
-            self.height = max(self.HEADER_HEIGHT + 40.0, self._expanded_height)
-            members = self.contained_nodes()
-            for member in members:
-                member.setVisible(True)
-
+    def set_locked(self, locked: bool):
+        self.payload["locked"] = bool(locked)
+        self.is_locked = bool(locked)
         self._emit_modified()
         self.update()
 
-    def toggle_collapsed(self):
-        self.set_collapsed(not self.payload.get("collapsed", False))
+    def toggle_locked(self):
+        self.set_locked(not self.payload.get("locked", False))
+
+    def fit_to_contents(self):
+        """Auto-resize and reposition frame to fit all attached child nodes via FrameService."""
+        return FrameService.fit_to_contents(self)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange:
+            # Block frame movement if locked
+            if self.payload.get("locked", False):
+                return self.pos()
+
+            if self.isSelected() and not self._is_moving:
+                self._is_moving = True
+                try:
+                    new_pos = value
+                    current_pos = self.pos()
+                    delta = new_pos - current_pos
+
+                    # Move attached child nodes by matching position delta
+                    for member in self.attached_nodes():
+                        if not getattr(member, "is_locked", False):
+                            member.setPos(member.pos() + delta)
+                finally:
+                    self._is_moving = False
+        return super().itemChange(change, value)
 
     def start_title_editing(self):
         """Open seamless inline title editor directly over header bar."""
@@ -213,14 +283,14 @@ class FrameNodeItem(NodeItem):
         return (pos.x() >= self.width - self.HANDLE_SIZE) and (pos.y() >= self.height - self.HANDLE_SIZE)
 
     def hoverMoveEvent(self, event):
-        if self._is_in_resize_handle(event.pos()) and not bool(self.payload.get("collapsed", False)):
+        if not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
             self.setCursor(Qt.SizeFDiagCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
         super().hoverMoveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self._is_in_resize_handle(event.pos()) and not bool(self.payload.get("collapsed", False)):
+        if event.button() == Qt.LeftButton and not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
             self._is_resizing = True
             self._resize_start_pos = event.pos()
             self._resize_start_size = (self.width, self.height)
@@ -229,9 +299,9 @@ class FrameNodeItem(NodeItem):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._is_resizing:
+        if self._is_resizing and not self.payload.get("locked", False):
             delta = event.pos() - self._resize_start_pos
-            min_w, min_h = self.definition.minimum_size if self.definition else (240.0, 180.0)
+            min_w, min_h = self.definition.minimum_size if self.definition else (MIN_FRAME_WIDTH, MIN_FRAME_HEIGHT)
             self.width = max(min_w, self._resize_start_size[0] + delta.x())
             self.height = max(min_h, self._resize_start_size[1] + delta.y())
             self._expanded_height = float(self.height)
@@ -252,10 +322,7 @@ class FrameNodeItem(NodeItem):
     def mouseDoubleClickEvent(self, event):
         self.on_double_clicked(event)
         if event.button() == Qt.LeftButton:
-            if event.pos().y() <= self.HEADER_HEIGHT:
-                self.start_title_editing()
-            else:
-                self.start_title_editing()
+            self.start_title_editing()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -271,24 +338,34 @@ class FrameNodeItem(NodeItem):
         accent = QColor(colors["accent"])
         header_bg = QColor(colors["header_bg"])
         surface_bg = QColor(colors["surface_bg"])
-        surface_bg.setAlpha(30)  # Polished translucent surface fill
+        surface_bg.setAlpha(30)  # Translucent surface fill
 
-        is_collapsed = bool(self.payload.get("collapsed", False))
+        is_locked = bool(self.payload.get("locked", False))
+
+        # Miro-Style Drag Hover Glow Highlight
+        if self._is_drag_hovered:
+            glow_bg = QColor(accent)
+            glow_bg.setAlpha(25)
+            painter.setBrush(QBrush(glow_bg))
+            glow_pen = QPen(accent)
+            glow_pen.setWidth(3)
+            glow_pen.setStyle(Qt.DashLine)
+            painter.setPen(glow_pen)
+            painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
 
         # 1. Fill Frame Background Surface
-        if not is_collapsed:
-            painter.setBrush(QBrush(surface_bg))
-            if self._is_drag_hovered:
-                border_pen = QPen(accent)
-                border_pen.setWidth(3)
-            elif self.isSelected():
-                border_pen = QPen(QColor("#6366F1"))
-                border_pen.setWidth(2)
-            else:
-                border_pen = QPen(QColor(colors["border"]))
-                border_pen.setWidth(1)
-            painter.setPen(border_pen)
-            painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
+        painter.setBrush(QBrush(surface_bg))
+        if self._is_drag_hovered:
+            border_pen = QPen(accent)
+            border_pen.setWidth(3)
+        elif self.isSelected():
+            border_pen = QPen(QColor("#6366F1"))
+            border_pen.setWidth(2)
+        else:
+            border_pen = QPen(QColor(colors["border"]))
+            border_pen.setWidth(1)
+        painter.setPen(border_pen)
+        painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
 
         # 2. Draw Header Bar
         header_rect = QRectF(0, 0, self.width, self.HEADER_HEIGHT)
@@ -319,8 +396,8 @@ class FrameNodeItem(NodeItem):
 
         title_text = str(self.payload.get("title", "Section Frame"))
         icon_str = self.definition.icon if self.definition else "🖼️"
-        status_suffix = " (Collapsed)" if is_collapsed else ""
-        header_text = f"{icon_str}  {title_text}{status_suffix}"
+        lock_suffix = " 🔒" if is_locked else ""
+        header_text = f"{icon_str}  {title_text}{lock_suffix}"
 
         painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
         painter.setPen(QPen(QColor(colors["badge_text"])))
@@ -328,7 +405,7 @@ class FrameNodeItem(NodeItem):
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, header_text)
 
         # 5. Bottom-Right Interactive Resize Handle (◢)
-        if not is_collapsed:
+        if not is_locked:
             handle_pen = QPen(accent)
             handle_pen.setWidth(2)
             painter.setPen(handle_pen)
@@ -336,26 +413,60 @@ class FrameNodeItem(NodeItem):
             painter.drawLine(w - 12, h - 4, w - 4, h - 12)
             painter.drawLine(w - 8, h - 4, w - 4, h - 8)
 
-        # 6. Selection Outline
+        # 6. Membership Selection Visualization (Soft Glow Outline around Member Nodes)
+        if self.isSelected():
+            glow_pen = QPen(accent)
+            glow_pen.setWidth(2)
+            painter.setPen(glow_pen)
+            glow_brush = QBrush(QColor(accent))
+            glow_brush.setColor(QColor(accent.red(), accent.green(), accent.blue(), 20))
+            painter.setBrush(glow_brush)
+
+            for member in self.attached_nodes():
+                member_scene_rect = member.sceneBoundingRect()
+                member_local_rect = self.mapRectFromScene(member_scene_rect)
+                painter.drawRoundedRect(member_local_rect.adjusted(-6, -6, 6, 6), 8, 8)
+
+        # 7. Selection Outline for Frame itself
         self.draw_selection_outline(painter, rect, self.CORNER_RADIUS)
 
     def on_context_menu(self, menu: QMenu):
         """Build context menu for Frame node."""
+        is_locked = bool(self.payload.get("locked", False))
+
         action_rename = QAction("✏️ Rename Frame...", menu)
         action_rename.triggered.connect(lambda: self.start_title_editing())
         menu.addAction(action_rename)
 
+        # Lock / Unlock Action
+        lock_label = "🔓 Unlock Frame" if is_locked else "🔒 Lock Frame"
+        action_lock = QAction(lock_label, menu)
+        action_lock.triggered.connect(self.toggle_locked)
+        menu.addAction(action_lock)
+
+        # Fit to Contents
+        action_fit = QAction("📐 Fit to Contents", menu)
+        action_fit.triggered.connect(self.fit_to_contents)
+        menu.addAction(action_fit)
+
+        menu.addSeparator()
+
         # Color Theme Submenu
-        color_menu = menu.addMenu("🎨 Change Color Theme")
-        for theme_key in ("purple", "blue", "green", "amber", "red", "gray"):
+        color_menu = menu.addMenu("🎨 Change Theme")
+        for theme_key in ("gray", "blue", "green", "yellow", "red", "purple"):
             theme_title = theme_key.capitalize()
             theme_act = QAction(f"● {theme_title}", color_menu)
             theme_act.triggered.connect(lambda checked=False, t=theme_key: self.set_color_theme(t))
             color_menu.addAction(theme_act)
 
-        # Collapse / Expand Action
-        is_collapsed = bool(self.payload.get("collapsed", False))
-        col_text = "↕️ Expand Frame" if is_collapsed else "↔️ Collapse Frame"
-        action_collapse = QAction(col_text, menu)
-        action_collapse.triggered.connect(self.toggle_collapsed)
-        menu.addAction(action_collapse)
+        menu.addSeparator()
+
+        # Children Operations
+        action_select_children = QAction("🎯 Select All Children", menu)
+        action_select_children.triggered.connect(self.select_all_children)
+        menu.addAction(action_select_children)
+
+        action_detach_children = QAction("❌ Detach All Children", menu)
+        action_detach_children.triggered.connect(self.detach_all)
+        menu.addAction(action_detach_children)
+

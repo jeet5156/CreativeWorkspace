@@ -7,9 +7,10 @@ from core.inspectable import InspectableObject, InspectableSection, InspectableF
 class ProjectInspectable(InspectableObject):
     """Adapter wrapping Project model into the InspectableObject contract."""
 
-    def __init__(self, project, project_service=None, on_updated_callback=None):
+    def __init__(self, project, project_service=None, client_service=None, on_updated_callback=None):
         self.project = project
         self.project_service = project_service
+        self.client_service = client_service
         self.on_updated_callback = on_updated_callback
 
     def get_display_name(self) -> str:
@@ -52,9 +53,21 @@ class ProjectInspectable(InspectableObject):
         ]
 
         # Section 2: Organization
+        client_options = ["None"]
+        current_client_val = "None"
+        if self.client_service:
+            all_clients = self.client_service.list_clients()
+            client_options += [c.name for c in all_clients if c.name]
+            if getattr(p, "client_id", None):
+                c_found = self.client_service.get_client(p.client_id)
+                if c_found:
+                    current_client_val = c_found.name
+            elif getattr(p, "client", None):
+                current_client_val = p.client
+
         org_fields = [
             InspectableField("tags", "Tags", "tags", value=", ".join(getattr(p, "tags", [])) if getattr(p, "tags", None) else ""),
-            InspectableField("client", "Client", "string", value=getattr(p, "client", "")),
+            InspectableField("client", "Client", "select", value=current_client_val, options=client_options),
             InspectableField("repository", "Git Repository", "string", value=getattr(p, "repository", "")),
             InspectableField("deadline", "Deadline", "string", value=getattr(p, "deadline", "")),
         ]
@@ -111,7 +124,38 @@ class ProjectInspectable(InspectableObject):
             self.project.tags = tags_list
             updated = True
         elif field_key == "client":
-            self.project.client = str(value)
+            old_cid = getattr(self.project, "client_id", "")
+            proj_identifier = getattr(self.project, "id", getattr(self.project, "name", ""))
+            
+            if val_str == "None" or not val_str:
+                self.project.client = ""
+                self.project.client_id = ""
+                if old_cid and self.client_service:
+                    self.client_service.remove_project_from_client(proj_identifier, old_cid, self.project_service)
+            else:
+                target_client = None
+                if self.client_service:
+                    for c in self.client_service.list_clients():
+                        if c.name == val_str:
+                            target_client = c
+                            break
+                if target_client:
+                    new_cid = target_client.id
+                    if old_cid and old_cid != new_cid and self.client_service:
+                        self.client_service.remove_project_from_client(proj_identifier, old_cid, self.project_service)
+                    self.project.client = target_client.name
+                    self.project.client_id = new_cid
+                    if self.client_service:
+                        self.client_service.assign_project_to_client(proj_identifier, new_cid, self.project_service)
+                else:
+                    self.project.client = val_str
+            updated = True
+        elif field_key == "client_id":
+            self.project.client_id = val_str
+            if self.client_service:
+                c = self.client_service.get_client(val_str)
+                if c:
+                    self.project.client = c.name
             updated = True
         elif field_key == "repository":
             self.project.repository = str(value)
@@ -133,7 +177,6 @@ class ProjectInspectable(InspectableObject):
                     pass
 
         return updated
-
 
 
 class AssetInspectable(InspectableObject):
@@ -203,14 +246,20 @@ class NodeInspectable(InspectableObject):
 
         if getattr(node, "payload", None):
             payload = node.payload
-            if "color_theme" in payload:
+            if "color_theme" in payload or "theme" in payload or "child_node_ids" in payload:
                 sections = []
                 frame_fields = [
-                    InspectableField("payload.title", "Frame Title", "string", value=str(payload.get("title", "Section Frame"))),
-                    InspectableField("payload.color_theme", "Color Theme", "enum", value=str(payload.get("color_theme", "purple")), options=["purple", "blue", "green", "amber", "red", "gray"]),
-                    InspectableField("payload.collapsed", "Collapsed", "boolean", value=bool(payload.get("collapsed", False))),
+                    InspectableField("payload.title", "Title", "string", value=str(payload.get("title", "Section Frame"))),
+                    InspectableField("payload.theme", "Theme", "enum", value=str(payload.get("theme", payload.get("color_theme", "blue"))).lower(), options=["gray", "blue", "green", "yellow", "red", "purple"]),
+                    InspectableField("payload.locked", "Locked", "boolean", value=bool(payload.get("locked", False))),
                 ]
                 sections.append(InspectableSection("Frame Properties", frame_fields))
+
+                child_count = len(node.attached_nodes()) if hasattr(node, "attached_nodes") else len(payload.get("child_node_ids", []))
+                org_fields = [
+                    InspectableField("children_count", "Children", "readonly", value=f"{child_count} nodes"),
+                ]
+                sections.append(InspectableSection("Organization", org_fields))
                 return sections
 
             if "image_path" in payload:
@@ -264,8 +313,11 @@ class NodeInspectable(InspectableObject):
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
         if not self.node_item:
             return False
-        if field_key == "payload.color_theme" and hasattr(self.node_item, "set_color_theme"):
+        if field_key in ("payload.theme", "payload.color_theme") and hasattr(self.node_item, "set_color_theme"):
             self.node_item.set_color_theme(str(value))
+            return True
+        if field_key == "payload.locked" and hasattr(self.node_item, "set_locked"):
+            self.node_item.set_locked(bool(value))
             return True
         if field_key == "payload.collapsed" and hasattr(self.node_item, "set_collapsed"):
             self.node_item.set_collapsed(bool(value))
@@ -274,4 +326,173 @@ class NodeInspectable(InspectableObject):
             real_key = field_key.split(".", 1)[1]
             self.node_item.on_property_changed(real_key, value)
             return True
+        return False
+
+
+class MultiNodeInspectable(InspectableObject):
+    """Adapter wrapping a multi-selection list of spatial Lab node items into InspectableObject."""
+
+    def __init__(self, nodes: List[Any]):
+        self.nodes = nodes or []
+
+    def get_display_name(self) -> str:
+        return f"{len(self.nodes)} Items Selected"
+
+    def get_display_icon(self) -> str:
+        return "🔲"
+
+    def get_inspection_sections(self) -> List[InspectableSection]:
+        if not self.nodes:
+            return []
+
+        type_counts = {}
+        for n in self.nodes:
+            t_name = n.definition.name if getattr(n, "definition", None) else n.__class__.__name__.replace("Item", "")
+            type_counts[t_name] = type_counts.get(t_name, 0) + 1
+
+        type_summary = ", ".join(f"{count} {t}" for t, count in type_counts.items())
+
+        fields = [
+            InspectableField("selection_count", "Selection Count", "readonly", value=f"{len(self.nodes)} nodes"),
+            InspectableField("node_types", "Node Types", "readonly", value=type_summary),
+        ]
+
+        return [InspectableSection("Selection Summary", fields)]
+
+    def set_inspectable_property(self, field_key: str, value: Any) -> bool:
+        return False
+
+
+class ClientInspectable(InspectableObject):
+    """Adapter wrapping Client domain model into the InspectableObject contract.
+
+    Provides live auto-saving property inspection sections for Company, Client Name,
+    Status, Priority, Client Type, Industry, Website, Country, Tags, Notes, Associated Projects, and Metadata.
+    """
+
+    def __init__(self, client, client_service=None, project_service=None, on_updated_callback=None):
+        self.client = client
+        self.client_service = client_service
+        self.project_service = project_service
+        self.on_updated_callback = on_updated_callback
+
+    def get_display_name(self) -> str:
+        return self.client.name if self.client and self.client.name else "Untitled Client"
+
+    def get_display_icon(self) -> str:
+        return "👥"
+
+    def get_inspection_sections(self) -> List[InspectableSection]:
+        if not self.client:
+            return []
+
+        c = self.client
+        from models.client import CLIENT_STATUSES, CLIENT_TYPES, CLIENT_PRIORITIES
+
+        general_fields = [
+            InspectableField("company", "Company", "string", value=getattr(c, "company", "")),
+            InspectableField("name", "Client Name", "string", value=getattr(c, "name", "")),
+            InspectableField(
+                "status",
+                "Status",
+                "select",
+                value=str(getattr(c, "status", "Active")),
+                options=CLIENT_STATUSES,
+            ),
+            InspectableField(
+                "priority",
+                "Priority",
+                "select",
+                value=str(getattr(c, "priority", "Medium")),
+                options=CLIENT_PRIORITIES,
+            ),
+            InspectableField(
+                "client_type",
+                "Client Type",
+                "select",
+                value=str(getattr(c, "client_type", "Game Studio")),
+                options=CLIENT_TYPES,
+            ),
+            InspectableField("industry", "Industry", "string", value=getattr(c, "industry", "")),
+            InspectableField("website", "Website", "string", value=getattr(c, "website", "")),
+            InspectableField("country", "Country", "string", value=getattr(c, "country", "")),
+            InspectableField("tags", "Tags", "tags", value=", ".join(getattr(c, "tags", [])) if getattr(c, "tags", None) else ""),
+            InspectableField("notes", "Notes", "text", value=getattr(c, "notes", "")),
+        ]
+
+        projs = []
+        if self.project_service and hasattr(self.project_service, "all_projects"):
+            projs = [p for p in self.project_service.all_projects() if getattr(p, "client_id", None) == c.id]
+
+        proj_str = ", ".join([p.name for p in projs]) if projs else "None assigned"
+        projects_fields = [
+            InspectableField("associated_projects", "Associated Projects", "readonly", value=proj_str),
+            InspectableField("project_count", "Project Count", "readonly", value=str(len(projs))),
+        ]
+
+        created_str = c.created.strftime("%d %b %Y %H:%M") if hasattr(c.created, "strftime") else str(getattr(c, "created", "—"))
+        modified_str = c.modified.strftime("%d %b %Y %H:%M") if hasattr(c.modified, "strftime") else created_str
+        metadata_fields = [
+            InspectableField("created", "Created", "readonly", value=created_str),
+            InspectableField("modified", "Updated", "readonly", value=modified_str),
+            InspectableField("id", "ID", "readonly", value=str(getattr(c, "id", "—"))),
+        ]
+
+        return [
+            InspectableSection("General", general_fields),
+            InspectableSection("Projects", projects_fields),
+            InspectableSection("Metadata", metadata_fields),
+        ]
+
+    def set_inspectable_property(self, field_key: str, value: Any) -> bool:
+        if not self.client:
+            return False
+
+        updated = False
+        val_str = str(value).strip() if value is not None else ""
+
+        if field_key == "name" and val_str:
+            self.client.name = val_str
+            updated = True
+        elif field_key == "company":
+            self.client.company = val_str
+            updated = True
+        elif field_key == "client_type":
+            self.client.client_type = val_str
+            updated = True
+        elif field_key == "status":
+            self.client.status = val_str
+            updated = True
+        elif field_key == "priority":
+            self.client.priority = val_str
+            updated = True
+        elif field_key == "industry":
+            self.client.industry = val_str
+            updated = True
+        elif field_key == "website":
+            self.client.website = val_str
+            updated = True
+        elif field_key == "country":
+            self.client.country = val_str
+            updated = True
+        elif field_key == "notes":
+            self.client.notes = val_str
+            updated = True
+        elif field_key == "tags":
+            if isinstance(value, list):
+                self.client.tags = [str(t).strip() for t in value if str(t).strip()]
+            else:
+                self.client.tags = [t.strip() for t in val_str.split(",") if t.strip()]
+            updated = True
+
+        if updated:
+            if self.client_service:
+                self.client_service.save_client(self.client)
+            if self.on_updated_callback:
+                try:
+                    self.on_updated_callback(self.client)
+                except Exception:
+                    pass
+            return True
+
         return False

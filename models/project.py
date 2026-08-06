@@ -12,6 +12,7 @@ class Project:
     status: str = "active"
     tags: list[str] = field(default_factory=list)
     client: str = ""
+    client_id: str = ""
     repository: str = ""
     deadline: str = ""
     is_pinned: bool = False
