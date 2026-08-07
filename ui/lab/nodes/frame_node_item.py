@@ -301,20 +301,28 @@ class FrameNodeItem(NodeItem):
         super().hoverMoveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            # 1. Left chevron hit test toggle
-            if event.pos().x() <= self.CHEVRON_HIT_WIDTH and event.pos().y() <= self.HEADER_HEIGHT:
+        if event.button() == Qt.LeftButton and event.pos().y() <= self.HEADER_HEIGHT:
+            pos = event.pos()
+            # 1. Separate Pin Badge hit test (independent hit area)
+            if (self.width - 68.0 <= pos.x() <= self.width - 42.0):
+                self.toggle_pinned()
+                event.accept()
+                return
+
+            # 2. Right-aligned + / − Collapse Button hit test
+            btn_x = self.width - 32.0
+            if (btn_x - 6.0 <= pos.x() <= btn_x + 26.0):
                 self.toggle_collapsed()
                 event.accept()
                 return
 
-            # 2. Resizer handle press
-            if not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
-                self._is_resizing = True
-                self._resize_start_pos = event.pos()
-                self._resize_start_size = (self.width, self.height)
-                event.accept()
-                return
+        # 3. Resizer handle press
+        if event.button() == Qt.LeftButton and not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
+            self._is_resizing = True
+            self._resize_start_pos = event.pos()
+            self._resize_start_size = (self.width, self.height)
+            event.accept()
+            return
 
         super().mousePressEvent(event)
 
@@ -350,6 +358,28 @@ class FrameNodeItem(NodeItem):
 
     def boundingRect(self) -> QRectF:
         return QRectF(0, 0, self.width, self.height)
+
+    def draw_pinned_badge(self, painter, rect: QRectF):
+        """Render crisp QPainter vector pin badge left of the collapse button on frame header."""
+        if getattr(self, "is_pinned", False):
+            badge_size = 14.0
+            bx = self.width - 60.0
+            by = (self.HEADER_HEIGHT - badge_size) / 2.0
+            badge_rect = QRectF(bx, by, badge_size, badge_size)
+
+            painter.save()
+            painter.setRenderHint(painter.RenderHint.Antialiasing if hasattr(painter, "RenderHint") else QPainter.Antialiasing)
+            bg_color = QColor("#F59E0B")
+            bg_color.setAlpha(45)
+            painter.setBrush(QBrush(bg_color))
+            painter.setPen(QPen(QColor("#F59E0B"), 1.2))
+            painter.drawEllipse(badge_rect)
+
+            dot_rect = QRectF(bx + 4.0, by + 4.0, 6.0, 6.0)
+            painter.setBrush(QBrush(QColor("#FBBF24")))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(dot_rect)
+            painter.restore()
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget = None):
         painter.setRenderHint(QPainter.Antialiasing)
@@ -412,30 +442,45 @@ class FrameNodeItem(NodeItem):
             painter.setPen(divider_pen)
             painter.drawLine(0, int(self.HEADER_HEIGHT), int(self.width), int(self.HEADER_HEIGHT))
 
-        # 4. Top Accent Strip & Chevron + Header Title Text
+        # 4. Top Accent Strip & Header Title Text
         accent_pen = QPen(accent)
         accent_pen.setWidth(3)
         painter.setPen(accent_pen)
         painter.drawLine(4, 4, 4, int(self.HEADER_HEIGHT - 4))
 
-        chevron_str = "▶ " if is_collapsed else "▼ "
         title_text = str(self.payload.get("title", "Section Frame"))
         icon_str = self.definition.icon if self.definition else "🖼️"
         lock_suffix = " 🔒" if is_locked else ""
-        header_text = f"{chevron_str}{icon_str}  {title_text}{lock_suffix}"
+        header_text = f"{icon_str}  {title_text}{lock_suffix}"
 
         painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
         painter.setPen(QPen(QColor(colors["badge_text"])))
-        text_rect = QRectF(14, 0, self.width - 100, self.HEADER_HEIGHT)
+        text_rect = QRectF(14, 0, self.width - 150, self.HEADER_HEIGHT)
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, header_text)
 
-        # Right Pill Badge showing attached child count
+        # Child Count Pill Badge (left of collapse button)
         attached_count = len(self.attached_nodes())
         badge_str = f"{attached_count} Nodes"
-        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
         painter.setPen(QPen(QColor(colors["badge_text"]).lighter(120)))
-        badge_rect = QRectF(self.width - 95, 0, 85, self.HEADER_HEIGHT)
+        badge_rect = QRectF(self.width - 145, 0, 75, self.HEADER_HEIGHT)
         painter.drawText(badge_rect, Qt.AlignRight | Qt.AlignVCenter, badge_str)
+
+        # 5. Right-Aligned + / − Rounded Collapse Button (18x18 px min hit target)
+        btn_w, btn_h = 20.0, 20.0
+        btn_x = self.width - 32.0
+        btn_y = (self.HEADER_HEIGHT - btn_h) / 2.0
+        btn_rect = QRectF(btn_x, btn_y, btn_w, btn_h)
+
+        btn_bg = QColor(255, 255, 255, 25)
+        painter.setBrush(QBrush(btn_bg))
+        painter.setPen(QPen(accent, 1.2))
+        painter.drawRoundedRect(btn_rect, 5.0, 5.0)
+
+        symbol_str = "+" if is_collapsed else "−"
+        painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        painter.setPen(QPen(QColor("#F1F5F9")))
+        painter.drawText(btn_rect, Qt.AlignCenter, symbol_str)
 
         # 5. Bottom-Right Interactive Resize Handle (◢) (only if not locked and expanded)
         if not is_locked and not is_collapsed:

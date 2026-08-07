@@ -261,6 +261,7 @@ class FrameService:
         anim.valueChanged.connect(_step)
         anim.finished.connect(_done)
         anim.start()
+        _step(1.0)
         return True
 
     @staticmethod

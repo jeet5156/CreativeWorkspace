@@ -400,14 +400,19 @@ class NodeInspectable(InspectableObject):
         if field_key == "payload.locked" and hasattr(self.node_item, "set_locked"):
             self.node_item.set_locked(bool(value))
             return True
-        if field_key == "payload.collapsed" and hasattr(self.node_item, "set_collapsed"):
-            self.node_item.set_collapsed(bool(value))
+        if field_key in ("payload.collapsed", "collapsed"):
+            val = bool(value)
+            if hasattr(self.node_item, "set_collapsed"):
+                self.node_item.set_collapsed(val)
+            else:
+                self.node_item.payload["collapsed"] = val
+                self.node_item.update()
+                self.node_item._emit_modified()
             return True
         if field_key.startswith("payload."):
             real_key = field_key.split(".", 1)[1]
             self.node_item.on_property_changed(real_key, value)
             return True
-        return False
         return False
 
 
