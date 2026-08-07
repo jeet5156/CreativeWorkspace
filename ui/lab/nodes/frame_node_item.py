@@ -128,6 +128,45 @@ class FrameNodeItem(NodeItem):
         if "visible_children" not in self.payload:
             self.payload["visible_children"] = True
 
+        if self.payload.get("collapsed", False):
+            self.is_collapsed = True
+            if self.height > self.HEADER_HEIGHT:
+                self._expanded_height = float(self.height)
+            self.height = float(self.HEADER_HEIGHT)
+            for child in self.attached_nodes():
+                child.setVisible(False)
+
+    def set_collapsed(self, collapsed: bool):
+        collapsed = bool(collapsed)
+
+        self.prepareGeometryChange()
+        self.payload["collapsed"] = collapsed
+        self.payload["visible_children"] = not collapsed
+        self.is_collapsed = collapsed
+
+        if collapsed:
+            if self.height > self.HEADER_HEIGHT:
+                self._expanded_height = float(self.height)
+            self.height = float(self.HEADER_HEIGHT)
+            for child in self.attached_nodes():
+                child.setVisible(False)
+        else:
+            self.height = max(float(self._expanded_height), float(MIN_FRAME_HEIGHT))
+            for child in self.attached_nodes():
+                child.setVisible(True)
+
+        self._emit_modified()
+        self.update()
+
+    def toggle_collapsed(self):
+        self.set_collapsed(not bool(self.payload.get("collapsed", False)))
+
+    def _get_collapse_button_rect(self) -> QRectF:
+        btn_size = 22.0
+        btn_x = self.width - btn_size - 8.0
+        btn_y = (self.HEADER_HEIGHT - btn_size) / 2.0
+        return QRectF(btn_x, btn_y, btn_size, btn_size)
+
     def get_theme_colors(self) -> dict:
         theme_key = str(self.payload.get("theme", self.payload.get("color_theme", "blue"))).lower()
         return self.COLOR_THEMES.get(theme_key, self.COLOR_THEMES["blue"])
@@ -283,19 +322,28 @@ class FrameNodeItem(NodeItem):
         return (pos.x() >= self.width - self.HANDLE_SIZE) and (pos.y() >= self.height - self.HANDLE_SIZE)
 
     def hoverMoveEvent(self, event):
-        if not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
+        pos = event.pos()
+        if self._get_collapse_button_rect().contains(pos):
+            self.setCursor(Qt.PointingHandCursor)
+        elif not self.payload.get("locked", False) and not self.is_collapsed and self._is_in_resize_handle(pos):
             self.setCursor(Qt.SizeFDiagCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
         super().hoverMoveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
-            self._is_resizing = True
-            self._resize_start_pos = event.pos()
-            self._resize_start_size = (self.width, self.height)
-            event.accept()
-            return
+        if event.button() == Qt.LeftButton:
+            pos = event.pos()
+            if self._get_collapse_button_rect().contains(pos):
+                self.toggle_collapsed()
+                event.accept()
+                return
+            if not self.payload.get("locked", False) and not self.is_collapsed and self._is_in_resize_handle(pos):
+                self._is_resizing = True
+                self._resize_start_pos = pos
+                self._resize_start_size = (self.width, self.height)
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -341,9 +389,10 @@ class FrameNodeItem(NodeItem):
         surface_bg.setAlpha(30)  # Translucent surface fill
 
         is_locked = bool(self.payload.get("locked", False))
+        is_collapsed = bool(self.payload.get("collapsed", False))
 
         # Miro-Style Drag Hover Glow Highlight
-        if self._is_drag_hovered:
+        if self._is_drag_hovered and not is_collapsed:
             glow_bg = QColor(accent)
             glow_bg.setAlpha(25)
             painter.setBrush(QBrush(glow_bg))
@@ -353,19 +402,20 @@ class FrameNodeItem(NodeItem):
             painter.setPen(glow_pen)
             painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
 
-        # 1. Fill Frame Background Surface
-        painter.setBrush(QBrush(surface_bg))
-        if self._is_drag_hovered:
-            border_pen = QPen(accent)
-            border_pen.setWidth(3)
-        elif self.isSelected():
-            border_pen = QPen(QColor("#6366F1"))
-            border_pen.setWidth(2)
-        else:
-            border_pen = QPen(QColor(colors["border"]))
-            border_pen.setWidth(1)
-        painter.setPen(border_pen)
-        painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
+        # 1. Fill Frame Background Surface (only when expanded)
+        if not is_collapsed:
+            painter.setBrush(QBrush(surface_bg))
+            if self._is_drag_hovered:
+                border_pen = QPen(accent)
+                border_pen.setWidth(3)
+            elif self.isSelected():
+                border_pen = QPen(QColor("#6366F1"))
+                border_pen.setWidth(2)
+            else:
+                border_pen = QPen(QColor(colors["border"]))
+                border_pen.setWidth(1)
+            painter.setPen(border_pen)
+            painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
 
         # 2. Draw Header Bar
         header_rect = QRectF(0, 0, self.width, self.HEADER_HEIGHT)
@@ -382,11 +432,12 @@ class FrameNodeItem(NodeItem):
         painter.setPen(header_pen)
         painter.drawRoundedRect(header_rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
 
-        # 3. Horizontal Header Divider Line
-        divider_pen = QPen(QColor(colors["border"]))
-        divider_pen.setWidth(1)
-        painter.setPen(divider_pen)
-        painter.drawLine(0, int(self.HEADER_HEIGHT), int(self.width), int(self.HEADER_HEIGHT))
+        # 3. Horizontal Header Divider Line (only when expanded)
+        if not is_collapsed:
+            divider_pen = QPen(QColor(colors["border"]))
+            divider_pen.setWidth(1)
+            painter.setPen(divider_pen)
+            painter.drawLine(0, int(self.HEADER_HEIGHT), int(self.width), int(self.HEADER_HEIGHT))
 
         # 4. Top Accent Strip & Header Title Text
         accent_pen = QPen(accent)
@@ -401,11 +452,24 @@ class FrameNodeItem(NodeItem):
 
         painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
         painter.setPen(QPen(QColor(colors["badge_text"])))
-        text_rect = QRectF(14, 0, self.width - 24, self.HEADER_HEIGHT)
+        text_rect = QRectF(14, 0, self.width - 50, self.HEADER_HEIGHT)
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, header_text)
 
+        # 4b. Draw Header Collapse / Expand Button
+        btn_rect = self._get_collapse_button_rect()
+        btn_bg = QColor(colors["badge_text"])
+        btn_bg.setAlpha(25)
+        painter.setBrush(QBrush(btn_bg))
+        painter.setPen(QPen(QColor(colors["accent"]), 1))
+        painter.drawRoundedRect(btn_rect, 4.0, 4.0)
+
+        painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        painter.setPen(QPen(QColor(colors["badge_text"])))
+        btn_icon = "⊕" if is_collapsed else "⊝"
+        painter.drawText(btn_rect, Qt.AlignCenter, btn_icon)
+
         # 5. Bottom-Right Interactive Resize Handle (◢)
-        if not is_locked:
+        if not is_locked and not is_collapsed:
             handle_pen = QPen(accent)
             handle_pen.setWidth(2)
             painter.setPen(handle_pen)
@@ -414,7 +478,7 @@ class FrameNodeItem(NodeItem):
             painter.drawLine(w - 8, h - 4, w - 4, h - 8)
 
         # 6. Membership Selection Visualization (Soft Glow Outline around Member Nodes)
-        if self.isSelected():
+        if self.isSelected() and not is_collapsed:
             glow_pen = QPen(accent)
             glow_pen.setWidth(2)
             painter.setPen(glow_pen)
@@ -433,6 +497,7 @@ class FrameNodeItem(NodeItem):
     def on_context_menu(self, menu: QMenu):
         """Build context menu for Frame node."""
         is_locked = bool(self.payload.get("locked", False))
+        is_collapsed = bool(self.payload.get("collapsed", False))
 
         action_rename = QAction("✏️ Rename Frame...", menu)
         action_rename.triggered.connect(lambda: self.start_title_editing())
@@ -443,6 +508,12 @@ class FrameNodeItem(NodeItem):
         action_lock = QAction(lock_label, menu)
         action_lock.triggered.connect(self.toggle_locked)
         menu.addAction(action_lock)
+
+        # Collapse / Expand Action
+        col_label = "↕️ Expand Frame" if is_collapsed else "↔️ Collapse Frame"
+        action_collapse = QAction(col_label, menu)
+        action_collapse.triggered.connect(self.toggle_collapsed)
+        menu.addAction(action_collapse)
 
         # Fit to Contents
         action_fit = QAction("📐 Fit to Contents", menu)

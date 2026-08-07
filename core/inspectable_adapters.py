@@ -252,6 +252,7 @@ class NodeInspectable(InspectableObject):
                     InspectableField("payload.title", "Title", "string", value=str(payload.get("title", "Section Frame"))),
                     InspectableField("payload.theme", "Theme", "enum", value=str(payload.get("theme", payload.get("color_theme", "blue"))).lower(), options=["gray", "blue", "green", "yellow", "red", "purple"]),
                     InspectableField("payload.locked", "Locked", "boolean", value=bool(payload.get("locked", False))),
+                    InspectableField("payload.collapsed", "Collapsed", "boolean", value=bool(payload.get("collapsed", False))),
                 ]
                 sections.append(InspectableSection("Frame Properties", frame_fields))
 

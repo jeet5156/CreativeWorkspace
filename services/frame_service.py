@@ -49,6 +49,8 @@ class FrameService:
                         break
 
             node.payload["parent_frame_id"] = frame.id
+            if frame.payload.get("collapsed", False) and hasattr(node, "setVisible"):
+                node.setVisible(False)
             if hasattr(node, "_emit_modified"):
                 node._emit_modified()
 
@@ -74,6 +76,8 @@ class FrameService:
         if active_scene:
             for item in active_scene.items():
                 if hasattr(item, "id") and item.id == node_id:
+                    if hasattr(item, "setVisible"):
+                        item.setVisible(True)
                     if hasattr(item, "payload") and isinstance(item.payload, dict):
                         if item.payload.get("parent_frame_id") == frame.id:
                             item.payload["parent_frame_id"] = None

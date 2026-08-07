@@ -241,6 +241,93 @@ class TestFrameNode(unittest.TestCase):
         self.assertIn(p_note.id, p_frame.get_child_ids())
         self.assertEqual(p_note.payload.get("parent_frame_id"), p_frame.id)
 
+    def test_frame_collapse_and_expand(self):
+        """Verify set_collapsed(True) shrinks frame to header height, hides children without moving them, and set_collapsed(False) restores."""
+        canvas = InfiniteCanvas()
+        frame = canvas.add_node({
+            "type": "frame.section",
+            "transform": {"x": 0.0, "y": 0.0, "width": 500.0, "height": 400.0}
+        })
+        note = canvas.add_node({
+            "type": "note.blank",
+            "transform": {"x": 50.0, "y": 50.0, "width": 100.0, "height": 100.0}
+        })
+        frame.attach_node(note)
+        orig_note_pos = QPointF(note.pos())
+
+        # 1. Collapse frame
+        frame.set_collapsed(True)
+        self.assertTrue(frame.is_collapsed)
+        self.assertTrue(frame.payload.get("collapsed"))
+        self.assertEqual(frame.height, frame.HEADER_HEIGHT)
+        self.assertFalse(note.isVisible())
+        self.assertEqual(note.pos(), orig_note_pos)  # Position untouched
+
+        # 2. Expand frame
+        frame.set_collapsed(False)
+        self.assertFalse(frame.is_collapsed)
+        self.assertFalse(frame.payload.get("collapsed"))
+        self.assertEqual(frame.height, 400.0)
+        self.assertTrue(note.isVisible())
+        self.assertEqual(note.pos(), orig_note_pos)  # Exact original position restored
+
+    def test_frame_collapse_inspector_synchronization(self):
+        """Verify Inspector property adapter exposes payload.collapsed and stays synchronized."""
+        canvas = InfiniteCanvas()
+        frame = canvas.add_node({
+            "type": "frame.section",
+            "transform": {"x": 0.0, "y": 0.0, "width": 500.0, "height": 400.0}
+        })
+        note = canvas.add_node({
+            "type": "note.blank",
+            "transform": {"x": 50.0, "y": 50.0, "width": 100.0, "height": 100.0}
+        })
+        frame.attach_node(note)
+
+        adapter = NodeInspectable(frame)
+        sections = adapter.get_inspection_sections()
+        frame_sec = next(s for s in sections if s.title == "Frame Properties")
+        collapsed_field = next(f for f in frame_sec.fields if f.key == "payload.collapsed")
+        self.assertFalse(collapsed_field.value)
+
+        # Toggle collapse via Inspector property adapter
+        adapter.set_inspectable_property("payload.collapsed", True)
+        self.assertTrue(frame.is_collapsed)
+        self.assertFalse(note.isVisible())
+
+        adapter.set_inspectable_property("payload.collapsed", False)
+        self.assertFalse(frame.is_collapsed)
+        self.assertTrue(note.isVisible())
+
+    def test_frame_collapse_persistence(self):
+        """Verify reloading frame from dictionary payload restores collapsed state and hides children."""
+        canvas = InfiniteCanvas()
+        frame_dict = {
+            "id": "frame-123",
+            "type": "frame.section",
+            "transform": {"x": 0.0, "y": 0.0, "width": 500.0, "height": 400.0},
+            "payload": {
+                "title": "Test Frame",
+                "collapsed": True,
+                "child_node_ids": ["note-123"]
+            }
+        }
+        note_dict = {
+            "id": "note-123",
+            "type": "note.blank",
+            "transform": {"x": 50.0, "y": 50.0, "width": 100.0, "height": 100.0},
+            "payload": {"parent_frame_id": "frame-123"}
+        }
+
+        frame = canvas.add_node(frame_dict)
+        note = canvas.add_node(note_dict)
+
+        # Re-attach and ensure restored state
+        frame.attach_node(note)
+        self.assertTrue(frame.is_collapsed)
+        self.assertEqual(frame.height, frame.HEADER_HEIGHT)
+        self.assertFalse(note.isVisible())
+
 
 if __name__ == "__main__":
     unittest.main()
