@@ -392,10 +392,12 @@ class LabService(QObject):
         board_data = self.load_board(project, board_id_or_name=identifier)
         return board_data.get("items", [])
 
-    def save_items(self, project, items_list: list, board_id_or_name: str = "Main", board_name: str = None, board_id: str = None) -> bool:
+    def save_items(self, project, items_list: list, board_id_or_name: str = "Main", board_name: str = None, board_id: str = None, connectors_list: list = None) -> bool:
         identifier = board_id or board_name or board_id_or_name
         board_data = self.load_board(project, board_id_or_name=identifier)
         board_data["items"] = items_list
+        if connectors_list is not None:
+            board_data["connectors"] = connectors_list
         return self.save_board(project, board_data, board_id_or_name=identifier)
 
     def save_item(self, project, item_dict: dict, board_id_or_name: str = "Main", board_name: str = None, board_id: str = None) -> bool:

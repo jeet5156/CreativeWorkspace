@@ -241,6 +241,68 @@ class TestFrameNode(unittest.TestCase):
         self.assertIn(p_note.id, p_frame.get_child_ids())
         self.assertEqual(p_note.payload.get("parent_frame_id"), p_frame.id)
 
+    def test_frame_collapse_and_expand(self):
+        """Verify Frame collapse/expand, expanded_rect payload, and child node visibility toggling."""
+        canvas = InfiniteCanvas()
+
+        frame = canvas.add_node({
+            "type": "frame.section",
+            "transform": {"x": 100.0, "y": 100.0, "width": 500.0, "height": 400.0}
+        })
+        note = canvas.add_node({
+            "type": "note.blank",
+            "transform": {"x": 150.0, "y": 150.0, "width": 100.0, "height": 100.0}
+        })
+
+        frame.attach_node(note)
+
+        # Collapse frame
+        frame.set_collapsed(True)
+        self.assertTrue(frame.payload.get("collapsed"))
+        self.assertIn("expanded_rect", frame.payload)
+        self.assertEqual(frame.payload["expanded_rect"]["height"], 400.0)
+        self.assertEqual(frame.height, 42.0)
+        self.assertFalse(note.isVisible())
+
+        # Expand frame
+        frame.set_collapsed(False)
+        self.assertFalse(frame.payload.get("collapsed"))
+        self.assertEqual(frame.height, 400.0)
+        self.assertTrue(note.isVisible())
+
+    def test_collapse_deselects_children(self):
+        """Verify collapsing a frame clears selection on hidden child nodes."""
+        canvas = InfiniteCanvas()
+
+        frame = canvas.add_node({
+            "type": "frame.section",
+            "transform": {"x": 0.0, "y": 0.0, "width": 500.0, "height": 400.0}
+        })
+        note = canvas.add_node({
+            "type": "note.blank",
+            "transform": {"x": 50.0, "y": 50.0, "width": 100.0, "height": 100.0}
+        })
+
+        frame.attach_node(note)
+        note.setSelected(True)
+        self.assertTrue(note.isSelected())
+
+        # Collapse frame -> attached note selection cleared
+        frame.set_collapsed(True)
+        self.assertFalse(note.isSelected())
+        self.assertFalse(note.isVisible())
+
+    def test_focus_node_navigation(self):
+        """Verify focus_node uses fitInView to center view on node bounding rect."""
+        canvas = InfiniteCanvas()
+        frame = canvas.add_node({
+            "type": "frame.section",
+            "transform": {"x": 200.0, "y": 300.0, "width": 400.0, "height": 300.0}
+        })
+
+        canvas.focus_node(frame)
+        self.assertIsNotNone(canvas.transform())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -219,12 +219,18 @@ class AssetInspectable(InspectableObject):
 class NodeInspectable(InspectableObject):
     """Adapter wrapping Spatial Lab NodeItem into InspectableObject contract."""
 
-    def __init__(self, node_item):
+    def __init__(self, node_item, connection_manager=None, canvas=None):
         self.node_item = node_item
+        self.connection_manager = connection_manager
+        self.canvas = canvas
 
     def get_display_name(self) -> str:
         if self.node_item and getattr(self.node_item, "definition", None):
-            return self.node_item.definition.title
+            title = self.node_item.definition.title
+            content_title = self.node_item.payload.get("title") if isinstance(self.node_item.payload, dict) else None
+            if content_title:
+                return f"{title}: {content_title}"
+            return title
         return "Lab Node"
 
     def get_display_icon(self) -> str:
@@ -238,7 +244,104 @@ class NodeInspectable(InspectableObject):
 
         node = self.node_item
         defn = getattr(node, "definition", None)
+        sections = []
 
+        # ---------------------------------------------------------------------
+        # Section 1: Summary Statistics Block (Scannable for thinking)
+        # ---------------------------------------------------------------------
+        cm = self.connection_manager
+        if not cm and hasattr(node, "scene") and node.scene() and node.scene().views():
+            cv = node.scene().views()[0]
+            if hasattr(cv, "connection_manager"):
+                cm = cv.connection_manager
+
+        outgoing_rels = []
+        incoming_rels = []
+        if cm:
+            all_node_rels = cm.get_node_relationships(node.id)
+            for r in all_node_rels:
+                if r.source_node_id == node.id:
+                    outgoing_rels.append(r)
+                else:
+                    incoming_rels.append(r)
+
+        total_rels = len(outgoing_rels) + len(incoming_rels)
+        tags_str = ", ".join(node.tags) if hasattr(node, "tags") and node.tags else "None"
+        node_meta = getattr(node, "metadata", None)
+        is_pinned = bool(node.payload.get("pinned", False) or (isinstance(node_meta, dict) and node_meta.get("pinned", False)))
+
+        parent_frame_id = node.payload.get("parent_frame_id") if isinstance(node.payload, dict) else None
+        frame_title = "Canvas Root"
+        if parent_frame_id and hasattr(node, "scene") and node.scene() and node.scene().views():
+            cv = node.scene().views()[0]
+            if hasattr(cv, "node"):
+                f_node = cv.node(parent_frame_id)
+                if f_node and hasattr(f_node, "payload"):
+                    frame_title = str(f_node.payload.get("title", "Frame"))
+
+        stat_fields = [
+            InspectableField("summary_total", "Knowledge Relationships", "readonly", value=str(total_rels)),
+            InspectableField("summary_incoming", "Incoming (Backlinks)", "readonly", value=str(len(incoming_rels))),
+            InspectableField("summary_outgoing", "Outgoing", "readonly", value=str(len(outgoing_rels))),
+            InspectableField("summary_frame", "Frame Location", "readonly", value=frame_title),
+            InspectableField("summary_tags", "Tags", "readonly", value=tags_str),
+            InspectableField("is_pinned", "Pinned Node", "boolean", value=is_pinned),
+        ]
+        sections.append(InspectableSection("Knowledge Overview", stat_fields))
+
+        # ---------------------------------------------------------------------
+        # Section 2: Grouped Outgoing Relationships
+        # ---------------------------------------------------------------------
+        from ui.lab.models.relationship_registry import RelationshipRegistry
+
+        if outgoing_rels:
+            out_grouped = {}
+            for r in outgoing_rels:
+                lbl = RelationshipRegistry.get_label(r.relationship_type)
+                out_grouped.setdefault(lbl, []).append(r)
+
+            out_fields = []
+            for rel_lbl, r_list in out_grouped.items():
+                for r in r_list:
+                    tgt_title = r.target_node_id[:8]
+                    if hasattr(node, "scene") and node.scene() and node.scene().views():
+                        cv = node.scene().views()[0]
+                        if hasattr(cv, "node"):
+                            tnode = cv.node(r.target_node_id)
+                            if tnode:
+                                tgt_title = tnode.payload.get("title") or (tnode.definition.title if tnode.definition else tnode.id[:8])
+                    txt = f"• {tgt_title}" + (f" ({r.title})" if r.title else "")
+                    out_fields.append(InspectableField(f"rel_jump.{r.target_node_id}", f"{rel_lbl} ({len(r_list)})", "readonly", value=txt))
+
+            sections.append(InspectableSection(f"Outgoing Connections ({len(outgoing_rels)})", out_fields))
+
+        # ---------------------------------------------------------------------
+        # Section 3: Grouped Incoming Relationships (Obsidian Backlinks)
+        # ---------------------------------------------------------------------
+        if incoming_rels:
+            in_grouped = {}
+            for r in incoming_rels:
+                lbl = RelationshipRegistry.get_label(r.relationship_type)
+                in_grouped.setdefault(lbl, []).append(r)
+
+            in_fields = []
+            for rel_lbl, r_list in in_grouped.items():
+                for r in r_list:
+                    src_title = r.source_node_id[:8]
+                    if hasattr(node, "scene") and node.scene() and node.scene().views():
+                        cv = node.scene().views()[0]
+                        if hasattr(cv, "node"):
+                            snode = cv.node(r.source_node_id)
+                            if snode:
+                                src_title = snode.payload.get("title") or (snode.definition.title if snode.definition else snode.id[:8])
+                    txt = f"• {src_title}" + (f" ({r.title})" if r.title else "")
+                    in_fields.append(InspectableField(f"rel_jump.{r.source_node_id}", f"Referenced By: {rel_lbl}", "readonly", value=txt))
+
+            sections.append(InspectableSection(f"Incoming Backlinks ({len(incoming_rels)})", in_fields))
+
+        # ---------------------------------------------------------------------
+        # Section 4: Node Specific Properties & Metadata
+        # ---------------------------------------------------------------------
         fields = [
             InspectableField("type_id", "Node Type", "readonly", value=defn.type_id if defn else "node"),
             InspectableField("id", "Node ID", "readonly", value=node.id),
@@ -247,72 +350,50 @@ class NodeInspectable(InspectableObject):
         if getattr(node, "payload", None):
             payload = node.payload
             if "color_theme" in payload or "theme" in payload or "child_node_ids" in payload:
-                sections = []
                 frame_fields = [
                     InspectableField("payload.title", "Title", "string", value=str(payload.get("title", "Section Frame"))),
                     InspectableField("payload.theme", "Theme", "enum", value=str(payload.get("theme", payload.get("color_theme", "blue"))).lower(), options=["gray", "blue", "green", "yellow", "red", "purple"]),
                     InspectableField("payload.locked", "Locked", "boolean", value=bool(payload.get("locked", False))),
+                    InspectableField("payload.collapsed", "Collapsed", "boolean", value=bool(payload.get("collapsed", False))),
                 ]
                 sections.append(InspectableSection("Frame Properties", frame_fields))
-
-                child_count = len(node.attached_nodes()) if hasattr(node, "attached_nodes") else len(payload.get("child_node_ids", []))
-                org_fields = [
-                    InspectableField("children_count", "Children", "readonly", value=f"{child_count} nodes"),
-                ]
-                sections.append(InspectableSection("Organization", org_fields))
-                return sections
-
-            if "image_path" in payload:
-                sections = []
+            elif "image_path" in payload:
                 general_fields = [
                     InspectableField("payload.title", "Title", "string", value=str(payload.get("title", ""))),
                     InspectableField("payload.caption", "Caption", "text", value=str(payload.get("caption", ""))),
                     InspectableField("payload.fit_mode", "Fit Mode", "enum", value=str(payload.get("fit_mode", "fit")), options=["fit", "fill"]),
                 ]
                 sections.append(InspectableSection("Reference Properties", general_fields))
+            else:
+                for k, v in payload.items():
+                    if k not in ("layout", "pinned"):
+                        fields.append(InspectableField(f"payload.{k}", k.capitalize(), "string", value=str(v)))
 
-                abs_path = node._resolve_abs_path() if hasattr(node, "_resolve_abs_path") else None
-                filename = payload.get("filename") or "—"
-                rel_path = payload.get("image_path") or "—"
-                resolution = "—"
-                file_size_str = "—"
-                mtime_str = "—"
+        fields.append(InspectableField("tags", "Tags (comma-separated)", "tags", value=tags_str if tags_str != "None" else ""))
+        sections.append(InspectableSection("General Properties", fields))
 
-                if abs_path and abs_path.exists():
-                    raw_w = payload.get("layout", {}).get("raw_width")
-                    raw_h = payload.get("layout", {}).get("raw_height")
-                    if raw_w and raw_h:
-                        resolution = f"{raw_w} × {raw_h}"
-                    try:
-                        from datetime import datetime
-                        size_bytes = abs_path.stat().st_size
-                        if size_bytes >= 1024 * 1024:
-                            file_size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
-                        else:
-                            file_size_str = f"{size_bytes / 1024:.1f} KB"
-                        mtime_str = datetime.fromtimestamp(abs_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-                    except Exception:
-                        pass
-
-                meta_fields = [
-                    InspectableField("filename", "Filename", "readonly", value=filename),
-                    InspectableField("relative_path", "Location", "readonly", value=rel_path),
-                    InspectableField("resolution", "Resolution", "readonly", value=resolution),
-                    InspectableField("filesize", "File Size", "readonly", value=file_size_str),
-                    InspectableField("modified", "Modified", "readonly", value=mtime_str),
-                ]
-                sections.append(InspectableSection("Image Metadata", meta_fields))
-                return sections
-
-            for k, v in payload.items():
-                if k != "layout":
-                    fields.append(InspectableField(f"payload.{k}", k.capitalize(), "string", value=str(v)))
-
-        return [InspectableSection("Node Properties", fields)]
+        return sections
 
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
         if not self.node_item:
             return False
+        if field_key == "is_pinned":
+            val = bool(value)
+            self.node_item.payload["pinned"] = val
+            node_meta = getattr(self.node_item, "metadata", None)
+            if isinstance(node_meta, dict):
+                node_meta["pinned"] = val
+            self.node_item.update()
+            self.node_item._emit_modified()
+            return True
+        if field_key == "tags":
+            if isinstance(value, list):
+                self.node_item.set_tags(value)
+            else:
+                tag_list = [t.strip() for t in str(value or "").split(",") if t.strip()]
+                self.node_item.set_tags(tag_list)
+            self.node_item.update()
+            return True
         if field_key in ("payload.theme", "payload.color_theme") and hasattr(self.node_item, "set_color_theme"):
             self.node_item.set_color_theme(str(value))
             return True
@@ -326,6 +407,7 @@ class NodeInspectable(InspectableObject):
             real_key = field_key.split(".", 1)[1]
             self.node_item.on_property_changed(real_key, value)
             return True
+        return False
         return False
 
 
@@ -495,4 +577,93 @@ class ClientInspectable(InspectableObject):
                     pass
             return True
 
+        return False
+
+
+class ConnectorInspectable(InspectableObject):
+    """Adapter wrapping a ConnectorItem instance into the InspectableObject contract."""
+
+    def __init__(self, connector_item):
+        self.connector = connector_item
+
+    def get_display_name(self) -> str:
+        if not self.connector:
+            return "Relationship"
+        from ui.lab.models.relationship_registry import RelationshipRegistry
+        lbl = RelationshipRegistry.get_label(self.connector.relationship_type)
+        if self.connector.title:
+            return f"Relationship: {lbl} ({self.connector.title})"
+        return f"Relationship: {lbl}"
+
+    def get_display_icon(self) -> str:
+        return "🔗"
+
+    def get_inspection_sections(self) -> List[InspectableSection]:
+        if not self.connector:
+            return []
+
+        from ui.lab.models.relationship_registry import RelationshipRegistry
+        c = self.connector
+        curr_rel = getattr(c, "relationship_type", "related_to") or "related_to"
+        all_defs = RelationshipRegistry.all_definitions()
+        opts = [d.label for d in all_defs]
+
+        curr_label = RelationshipRegistry.get_label(curr_rel)
+
+        rel_fields = [
+            InspectableField("relationship_type", "Relationship Type", "enum", value=curr_label, options=opts),
+            InspectableField("title", "Custom Title", "string", value=str(c.title or "")),
+            InspectableField("notes", "Decision Notes (Rationale)", "text", value=str(getattr(c, "notes", ""))),
+            InspectableField("weight", "Relationship Weight", "string", value=str(getattr(c.relationship, "weight", 1.0))),
+            InspectableField("created_by", "Created By", "readonly", value=str(getattr(c.relationship, "created_by", "manual"))),
+        ]
+        sections = [InspectableSection("Relationship Properties", rel_fields)]
+
+        endpoints_fields = [
+            InspectableField("source_id", "Source Node ID", "readonly", value=str(c.source_id)),
+            InspectableField("source_anchor", "Source Anchor", "string", value=str(getattr(c, "source_anchor", "center"))),
+            InspectableField("target_id", "Target Node ID", "readonly", value=str(c.target_id)),
+            InspectableField("target_anchor", "Target Anchor", "string", value=str(getattr(c, "target_anchor", "center"))),
+            InspectableField("id", "Relationship ID", "readonly", value=str(c.id)),
+        ]
+        sections.append(InspectableSection("Endpoints & Graph", endpoints_fields))
+        return sections
+
+    def set_inspectable_property(self, field_key: str, value: Any) -> bool:
+        if not self.connector or not hasattr(self.connector, "_manager") or not self.connector._manager:
+            return False
+
+        c = self.connector
+        mgr = c._manager
+
+        if field_key == "relationship_type":
+            from ui.lab.models.relationship_registry import RelationshipRegistry
+            # Lookup definition ID by label
+            val_str = str(value or "Related To")
+            target_id = "related_to"
+            for d in RelationshipRegistry.all_definitions():
+                if d.label.lower() == val_str.lower() or d.id.lower() == val_str.lower():
+                    target_id = d.id
+                    break
+            mgr.change_type(c.id, target_id)
+            return True
+        elif field_key in ("title", "label"):
+            mgr.update_relationship(c.id, title=str(value or "").strip())
+            return True
+        elif field_key == "notes":
+            mgr.update_relationship(c.id, notes=str(value or "").strip())
+            return True
+        elif field_key == "weight":
+            try:
+                w = float(value)
+                mgr.update_relationship(c.id, weight=w)
+                return True
+            except Exception:
+                return False
+        elif field_key == "source_anchor":
+            mgr.update_relationship(c.id, source_anchor=str(value or "center"))
+            return True
+        elif field_key == "target_anchor":
+            mgr.update_relationship(c.id, target_anchor=str(value or "center"))
+            return True
         return False

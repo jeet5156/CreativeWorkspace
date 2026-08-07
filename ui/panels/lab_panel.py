@@ -119,6 +119,11 @@ class LabPanel(QWidget):
         self.grid_btn.setToolTip("Toggle Background Grid")
         header_layout.addWidget(self.grid_btn)
 
+        # Quick Search Button
+        self.search_btn = QPushButton("🔍 Search (Ctrl+K)")
+        self.search_btn.setToolTip("Quick Node Search Palette (Ctrl+K)")
+        header_layout.addWidget(self.search_btn)
+
         main_layout.addWidget(header)
 
         # ---------------------------------------------------------------------
@@ -222,6 +227,7 @@ class LabPanel(QWidget):
         self.zoom_in_btn.clicked.connect(self.canvas.zoom_in)
         self.zoom_reset_btn.clicked.connect(self.canvas.reset_camera)
         self.grid_btn.clicked.connect(self._toggle_grid)
+        self.search_btn.clicked.connect(self.canvas.open_node_search_dialog)
 
         # Debounce timer for persisting viewport state
         self._save_timer = QTimer(self)
@@ -328,12 +334,15 @@ class LabPanel(QWidget):
             viewport = board_data.get("viewport", {})
             self.canvas.set_viewport_state(viewport)
 
-            # Load nodes into scene
+            # Load nodes & connectors into scene
             disk_items = board_data.get("items", [])
+            disk_connectors = board_data.get("connectors", [])
             self.canvas.blockSignals(True)
             try:
                 for item_data in disk_items:
                     self.canvas.add_node(item_data)
+                for conn_data in disk_connectors:
+                    self.canvas.add_connector(conn_data)
             finally:
                 self.canvas.blockSignals(was_blocked)
 
@@ -420,49 +429,42 @@ class LabPanel(QWidget):
         delete_act = QAction("🗑️ Delete Board", self)
 
         switch_act.triggered.connect(lambda: self._switch_to_board(board_id))
-        rename_act.triggered.connect(lambda: self._on_rename_board(board_id, board_name))
-        dup_act.triggered.connect(lambda: self._on_duplicate_board(board_id))
-        delete_act.triggered.connect(lambda: self._on_delete_board(board_id, board_name))
+        rename_act.triggered.connect(lambda: self._on_rename_board_clicked(board_id, board_name))
+        dup_act.triggered.connect(lambda: self._on_duplicate_board_clicked(board_id))
+        delete_act.triggered.connect(lambda: self._on_delete_board_clicked(board_id, board_name))
 
         menu.addAction(switch_act)
-        menu.addSeparator()
         menu.addAction(rename_act)
         menu.addAction(dup_act)
         menu.addSeparator()
         menu.addAction(delete_act)
+        menu.exec_(self.boards_list.mapToGlobal(pos))
 
-        menu.exec(self.boards_list.mapToGlobal(pos))
-
-    def _on_rename_board(self, board_id: str, current_name: str):
+    def _on_rename_board_clicked(self, board_id: str, old_name: str):
         if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
             return
-
-        new_name, ok = QInputDialog.getText(self, "Rename Board", "Enter new board name:", text=current_name)
-        if ok and new_name.strip():
+        name, ok = QInputDialog.getText(self, "Rename Board", "Enter new board name:", text=old_name)
+        if ok and name.strip():
             lab_svc = self._context.lab_service
-            if lab_svc.rename_board(self._current_project, board_id, new_name.strip()):
+            if lab_svc.rename_board(self._current_project, board_id, name.strip()):
                 if board_id == self._current_board_id:
-                    self._current_board_name = new_name.strip()
+                    self._current_board_name = name.strip()
                     self.board_label.setText(f"— {self._current_board_name} Canvas")
                 self._refresh_boards_sidebar()
 
-    def _on_duplicate_board(self, board_id: str):
+    def _on_duplicate_board_clicked(self, board_id: str):
         if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
             return
-
         lab_svc = self._context.lab_service
         new_entry = lab_svc.duplicate_board(self._current_project, board_id)
         if new_entry:
             self._switch_to_board(new_entry["id"])
 
-    def _on_delete_board(self, board_id: str, board_name: str):
+    def _on_delete_board_clicked(self, board_id: str, board_name: str):
         if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
             return
-
         lab_svc = self._context.lab_service
         boards = lab_svc.list_boards(self._current_project)
-
-        # Deletion Guard: Cannot delete the last board
         if len(boards) <= 1:
             QMessageBox.warning(
                 self,
@@ -524,17 +526,25 @@ class LabPanel(QWidget):
             return
         self._item_save_timer.start()
 
-    def _on_selection_changed(self, selected_nodes: list):
+    def _on_selection_changed(self, selected_items: list):
         if not self._context or not getattr(self._context, "inspector_panel", None):
             return
 
         inspector = self._context.inspector_panel
+        from ui.lab.connectors.connector_item import ConnectorItem
         try:
-            if len(selected_nodes) == 1:
-                inspector.show_node(selected_nodes[0])
-            elif len(selected_nodes) > 1:
+            all_selected = self.canvas._scene.selectedItems()
+            sel_connectors = [it for it in all_selected if isinstance(it, ConnectorItem)]
+            sel_nodes = [it for it in all_selected if not isinstance(it, ConnectorItem)]
+
+            if len(sel_connectors) == 1 and not sel_nodes:
+                from core.inspectable_adapters import ConnectorInspectable
+                inspector.inspect(ConnectorInspectable(sel_connectors[0]))
+            elif len(sel_nodes) == 1 and not sel_connectors:
+                inspector.show_node(sel_nodes[0])
+            elif len(sel_nodes) > 1:
                 from core.inspectable_adapters import MultiNodeInspectable
-                adapter = MultiNodeInspectable(selected_nodes)
+                adapter = MultiNodeInspectable(sel_nodes)
                 inspector.inspect(adapter)
             else:
                 inspector.inspect(None)
@@ -563,7 +573,12 @@ class LabPanel(QWidget):
             return
         try:
             items_data = [item.to_dict() for item in self.canvas._items_map.values()]
-            self._context.lab_service.save_items(self._current_project, items_data, board_id_or_name=self._current_board_id or "Main")
+            connectors_data = [conn.to_dict() for conn in self.canvas._connector_map.values()]
+            self._context.lab_service.save_items(
+                self._current_project,
+                items_data,
+                connectors_list=connectors_data,
+                board_id_or_name=self._current_board_id or "Main"
+            )
         except Exception:
             pass
-

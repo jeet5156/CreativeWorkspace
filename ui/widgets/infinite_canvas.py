@@ -1,11 +1,13 @@
 import math
 import uuid
-from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QMenu
+from typing import Optional, List, Dict
+from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsPathItem, QMenu
 from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QPoint
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QAction
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QAction, QPainterPath
 
 from core.canvas_clipboard import CanvasClipboard
 from core.canvas_command import CanvasCommand
+from services.connection_manager import ConnectionManager
 from ui.lab.nodes.node_definition import NodeDefinition
 from ui.lab.nodes.node_capability import NodeCapability
 from ui.lab.nodes.node_item import NodeItem
@@ -52,7 +54,20 @@ class InfiniteCanvas(QGraphicsView):
 
         # Internal node dictionary: node_id -> NodeItem
         self._items_map = {}
+        self.connection_manager = ConnectionManager(self)
+        self._connector_map = self.connection_manager._connectors
         self._is_loading = False
+
+        # Phase 2 Navigation Subsystems
+        from ui.lab.models.navigation_history import NavigationHistoryService
+        self.nav_history_service = NavigationHistoryService()
+        self._board_id = "Main"
+        self._saved_views = {}
+
+        # Connection drag preview state
+        self._drag_connection_start_node = None
+        self._drag_connection_start_anchor = "center"
+        self._drag_connection_preview_item = None
 
         # Viewport rendering flags
         self.setRenderHint(QPainter.Antialiasing)
@@ -166,6 +181,19 @@ class InfiniteCanvas(QGraphicsView):
             self._apply_zoom(1.0 / self.ZOOM_STEP)
         event.accept()
 
+    def focus_node(self, node, padding: float = 50.0):
+        """Center and fit view on node bounding rect using fitInView."""
+        if not node:
+            return
+        rect = node.sceneBoundingRect().adjusted(-padding, -padding, padding, padding)
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        self._zoom_level = self.transform().m11()
+        self.viewport().update()
+        self._emit_camera_changed()
+
+    center_on_node = focus_node
+    zoom_to_rect = focus_node
+
     # -------------------------------------------------------------------------
     # Panning & Mouse Interactions
     # -------------------------------------------------------------------------
@@ -185,11 +213,45 @@ class InfiniteCanvas(QGraphicsView):
             self.setDragMode(QGraphicsView.NoDrag)
             event.accept()
             return
+
+        if event.button() == Qt.LeftButton:
+            scene_pos = self.mapToScene(event.pos())
+            items_near = self.scene().items(QRectF(scene_pos.x() - 24, scene_pos.y() - 24, 48, 48))
+            node = None
+            for it in items_near:
+                curr = it
+                while curr:
+                    if isinstance(curr, NodeItem):
+                        node = curr
+                        break
+                    curr = curr.parentItem()
+                if node:
+                    break
+
+            if node and hasattr(node, "get_closest_anchor"):
+                anchor_id, anchor_pos = node.get_closest_anchor(scene_pos)
+                if anchor_id and anchor_id != "center":
+                    dx = scene_pos.x() - anchor_pos.x()
+                    dy = scene_pos.y() - anchor_pos.y()
+                    dist = math.hypot(dx, dy)
+                    print(f"[TRACE] Stage 1 & 2: Anchor hit test dist={dist:.1f}px for anchor '{anchor_id}' on node {node.id}")
+                    if dist <= 24.0:  # 24px hit radius for anchor ports
+                        print(f"[TRACE] Stage 2: Begin connection drag from node {node.id} anchor '{anchor_id}'")
+                        self.start_connection_drag(node, source_anchor=anchor_id, mouse_scene_pos=scene_pos)
+                        event.accept()
+                        return
+
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         scene_pos = self.mapToScene(event.pos())
         self.cursor_position_changed.emit(scene_pos.x(), scene_pos.y())
+
+        if self._drag_connection_start_node:
+            print(f"[TRACE] Stage 3: Mouse move preview update to scene pos ({scene_pos.x():.1f}, {scene_pos.y():.1f})")
+            self.update_connection_drag(scene_pos)
+            event.accept()
+            return
 
         if self._is_panning:
             delta = event.pos() - self._pan_start
@@ -221,6 +283,34 @@ class InfiniteCanvas(QGraphicsView):
 
     def mouseReleaseEvent(self, event):
         from ui.lab.nodes.frame_node_item import FrameNodeItem
+
+        if self._drag_connection_start_node:
+            scene_pos = self.mapToScene(event.pos())
+            items_near = self.scene().items(QRectF(scene_pos.x() - 24, scene_pos.y() - 24, 48, 48))
+            target_node = None
+            for it in items_near:
+                curr = it
+                while curr:
+                    if isinstance(curr, NodeItem):
+                        target_node = curr
+                        break
+                    curr = curr.parentItem()
+                if target_node and target_node != self._drag_connection_start_node:
+                    break
+
+            if target_node and target_node != self._drag_connection_start_node:
+                tgt_anchor = "center"
+                if hasattr(target_node, "get_closest_anchor"):
+                    a_id, _ = target_node.get_closest_anchor(scene_pos)
+                    if a_id:
+                        tgt_anchor = a_id
+                print(f"[TRACE] Stage 4: Mouse release target node detected: {target_node.id} anchor '{tgt_anchor}'")
+                self.finish_connection_drag(target_node, target_anchor=tgt_anchor)
+            else:
+                print("[TRACE] Mouse release without valid target node -> cancelling drag")
+                self.cancel_connection_drag()
+            event.accept()
+            return
 
         # Check drop attachment onto Frame nodes
         selected = self.selected_nodes()
@@ -272,20 +362,29 @@ class InfiniteCanvas(QGraphicsView):
         return None
 
     def copy_selection(self):
-        """Serialize currently selected nodes into CanvasClipboard with Figma-style frame rules."""
+        """Serialize currently selected nodes and connecting lines into CanvasClipboard."""
         selected = self.selected_nodes()
         if not selected:
             return
         from services.frame_service import FrameService
         prepared_nodes = FrameService.prepare_clipboard_nodes(selected)
-        self.clipboard.copy(prepared_nodes)
+
+        # Copy connectors where both source and target are selected
+        selected_ids = {n.id if hasattr(n, "id") else str(n.get("id")) for n in prepared_nodes}
+        prepared_connectors = []
+        for conn in self._connector_map.values():
+            if conn.source_id in selected_ids and conn.target_id in selected_ids:
+                prepared_connectors.append(conn.to_dict())
+
+        self.clipboard.copy(prepared_nodes, connectors=prepared_connectors)
 
     def paste(self, mouse_pos: QPointF = None) -> list:
-        """Deserialize nodes from CanvasClipboard, assign fresh UUIDs, apply offset, and select pasted nodes."""
+        """Deserialize nodes and connectors from CanvasClipboard, assign fresh UUIDs, apply offset, and select pasted nodes."""
         if not self.clipboard.has_content():
             return []
 
         nodes_data = self.clipboard.get_nodes()
+        connectors_data = self.clipboard.get_connectors()
         paste_count = self.clipboard.increment_paste_count()
         offset = 20.0 * paste_count
 
@@ -335,6 +434,19 @@ class InfiniteCanvas(QGraphicsView):
             if node:
                 pasted_nodes.append(node)
 
+        # Paste remapped connectors between pasted nodes
+        for conn_data in connectors_data:
+            old_src = conn_data.get("source_node_id") or conn_data.get("source_id")
+            old_tgt = conn_data.get("target_node_id") or conn_data.get("target_id")
+            if old_src in old_to_new_id_map and old_tgt in old_to_new_id_map:
+                new_conn_data = dict(conn_data)
+                new_conn_data["id"] = str(uuid.uuid4())
+                new_conn_data["source_id"] = old_to_new_id_map[old_src]
+                new_conn_data["target_id"] = old_to_new_id_map[old_tgt]
+                new_conn_data["source_node_id"] = old_to_new_id_map[old_src]
+                new_conn_data["target_node_id"] = old_to_new_id_map[old_tgt]
+                self.add_connector(new_conn_data)
+
         if pasted_nodes:
             from services.frame_service import FrameService
             FrameService.remap_pasted_memberships(pasted_nodes, old_to_new_id_map)
@@ -352,26 +464,75 @@ class InfiniteCanvas(QGraphicsView):
         return self.paste()
 
     def delete_selection(self):
-        """Single canonical deletion handler for selected canvas nodes."""
-        selected = self.selected_nodes()
-        if not selected:
+        """Single canonical deletion handler for selected canvas nodes and connectors."""
+        from ui.lab.connectors.connector_item import ConnectorItem
+        selected_items = list(self._scene.selectedItems())
+        if not selected_items:
             return
-        for node in selected:
-            if getattr(node, "is_locked", False):
-                continue
-            if hasattr(node, "on_deleted"):
-                try:
-                    node.on_deleted()
-                except Exception:
-                    pass
-            self.remove_node(node.id)
+        for item in selected_items:
+            if isinstance(item, ConnectorItem):
+                self.remove_connector(item.id)
+            elif isinstance(item, NodeItem):
+                if getattr(item, "is_locked", False):
+                    continue
+                if hasattr(item, "on_deleted"):
+                    try:
+                        item.on_deleted()
+                    except Exception:
+                        pass
+                self.remove_node(item.id)
         self.clear_selection()
 
     delete_selected_nodes = delete_selection
 
+    def is_editing_text(self) -> bool:
+        """Query if any child QGraphicsItem or QWidget currently has text editing focus."""
+        scene = self.scene()
+        if scene:
+            focus_item = scene.focusItem()
+            if focus_item:
+                if hasattr(focus_item, "widget") and callable(focus_item.widget):
+                    w = focus_item.widget()
+                    if hasattr(w, "isReadOnly") and not w.isReadOnly():
+                        return True
+                if hasattr(focus_item, "textInteractionFlags"):
+                    flags = focus_item.textInteractionFlags()
+                    if flags & (Qt.TextEditorInteraction | Qt.TextEditable):
+                        return True
+
+        from PySide6.QtWidgets import QApplication, QTextEdit
+        focus_widget = QApplication.focusWidget()
+        if focus_widget and focus_widget != self and focus_widget != self.viewport():
+            if isinstance(focus_widget, QTextEdit) or (focus_widget.parent() and isinstance(focus_widget.parent(), QTextEdit)):
+                p = focus_widget if isinstance(focus_widget, QTextEdit) else focus_widget.parent()
+                if not p.isReadOnly():
+                    return True
+
+        return False
+
     def keyPressEvent(self, event):
+        if self.is_editing_text():
+            super().keyPressEvent(event)
+            return
+
         mods = event.modifiers()
         key = event.key()
+
+        if mods & Qt.AltModifier:
+            if key == Qt.Key_Left:
+                self.go_back_history()
+                event.accept()
+                return
+            elif key == Qt.Key_Right:
+                self.go_forward_history()
+                event.accept()
+                return
+
+        if key == Qt.Key_Escape:
+            self.clear_neighbor_highlight()
+            self.clear_selection()
+            event.accept()
+            return
 
         if mods & Qt.ControlModifier:
             if key == Qt.Key_C:
@@ -390,8 +551,16 @@ class InfiniteCanvas(QGraphicsView):
                 self.select_all()
                 event.accept()
                 return
+            elif key == Qt.Key_K:
+                self.open_node_search_dialog()
+                event.accept()
+                return
 
         if key == Qt.Key_Escape:
+            if self._drag_connection_preview_item:
+                self.cancel_connection_drag()
+                event.accept()
+                return
             self.execute_command(CanvasCommand.CLEAR_SELECTION)
             event.accept()
             return
@@ -415,6 +584,132 @@ class InfiniteCanvas(QGraphicsView):
             event.accept()
             return
         super().keyReleaseEvent(event)
+
+    def push_navigation_state(self, node_id: Optional[str] = None):
+        """Record current spatial state into NavigationHistoryService stack."""
+        from ui.lab.models.navigation_history import NavigationEvent
+        center = self.mapToScene(self.viewport().rect().center())
+        evt = NavigationEvent(
+            board_id=getattr(self, "_board_id", "Main"),
+            node_id=node_id,
+            camera_x=center.x(),
+            camera_y=center.y(),
+            zoom=self._zoom_level
+        )
+        self.nav_history_service.push_event(evt)
+
+    def go_back_history(self):
+        """VS Code 'Go Back' navigation restoring previous board, node selection, and camera zoom/pan."""
+        evt = self.nav_history_service.go_back()
+        if evt:
+            self._restore_navigation_event(evt)
+
+    def go_forward_history(self):
+        """VS Code 'Go Forward' navigation restoring forward board, node selection, and camera zoom/pan."""
+        evt = self.nav_history_service.go_forward()
+        if evt:
+            self._restore_navigation_event(evt)
+
+    def _restore_navigation_event(self, evt):
+        if evt.node_id and evt.node_id in self._items_map:
+            node = self._items_map[evt.node_id]
+            self.set_selected_nodes([node])
+            self.focus_node(node)
+        else:
+            self.centerOn(evt.camera_x, evt.camera_y)
+
+    def highlight_neighborhood(self, node_id: str):
+        """Set opacity=1.0 for connected neighborhood nodes/connectors and 0.2 for unrelated items."""
+        if node_id not in self._items_map:
+            return
+
+        connected_rels = self.connection_manager.get_node_relationships(node_id)
+        connected_node_ids = {node_id}
+        connected_conn_ids = set()
+
+        for r in connected_rels:
+            connected_node_ids.add(r.source_node_id)
+            connected_node_ids.add(r.target_node_id)
+            connected_conn_ids.add(r.id)
+
+        for nid, item in self._items_map.items():
+            if nid in connected_node_ids:
+                item.setOpacity(1.0)
+            else:
+                item.setOpacity(0.2)
+
+        for conn in self.connectors():
+            if conn.id in connected_conn_ids:
+                conn.setOpacity(1.0)
+            else:
+                conn.setOpacity(0.2)
+
+    def clear_neighbor_highlight(self):
+        """Restore opacity=1.0 for all canvas items."""
+        for item in self._items_map.values():
+            item.setOpacity(1.0)
+        for conn in self.connectors():
+            conn.setOpacity(1.0)
+
+    def save_camera_view(self, name: str):
+        """Create and store a first-class project-level SavedView asset."""
+        from ui.lab.models.saved_view import SavedView
+        center = self.mapToScene(self.viewport().rect().center())
+        sv = SavedView(
+            name=name,
+            board_id=getattr(self, "_board_id", "Main"),
+            camera_x=center.x(),
+            camera_y=center.y(),
+            zoom=self._zoom_level
+        )
+        self._saved_views[sv.id] = sv
+        return sv
+
+    def restore_camera_view(self, view_id_or_model):
+        """Restore camera view with smooth animated zoom/pan interpolation."""
+        from ui.lab.models.saved_view import SavedView
+        sv = view_id_or_model if isinstance(view_id_or_model, SavedView) else self._saved_views.get(view_id_or_model)
+        if not sv:
+            return
+
+        start_center = self.mapToScene(self.viewport().rect().center())
+        target_center = QPointF(sv.camera_x, sv.camera_y)
+        start_zoom = self._zoom_level
+        target_zoom = sv.zoom
+
+        from PySide6.QtCore import QVariantAnimation, QEasingCurve
+        anim = QVariantAnimation(self)
+        anim.setDuration(350)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def _step(progress):
+            cx = start_center.x() + (target_center.x() - start_center.x()) * progress
+            cy = start_center.y() + (target_center.y() - start_center.y()) * progress
+            z = start_zoom + (target_zoom - start_zoom) * progress
+
+            self.centerOn(cx, cy)
+            scale_factor = z / self._zoom_level if self._zoom_level != 0 else 1.0
+            self.scale(scale_factor, scale_factor)
+            self._zoom_level = z
+
+        anim.valueChanged.connect(_step)
+        anim.start()
+
+    def open_node_search_dialog(self):
+        """Open the Ctrl+K Quick Search Palette for spatial canvas nodes."""
+        from ui.dialogs.node_search_dialog import NodeSearchDialog
+        nodes = list(self._items_map.values())
+        dlg = NodeSearchDialog(nodes, parent=self)
+        dlg.node_selected.connect(self._on_search_node_selected)
+        dlg.exec_()
+
+    def _on_search_node_selected(self, node_id: str):
+        node = self.node(node_id)
+        if node:
+            self.set_selected_nodes([node])
+            self.focus_node(node)
 
     def _emit_camera_changed(self):
         try:
@@ -473,11 +768,10 @@ class InfiniteCanvas(QGraphicsView):
             return None
 
         node_type = node_data.get("type", "note.blank")
-        node = NodeRegistry.create_node(node_type, node_context=self.node_context)
+        node = NodeRegistry.create_node(node_type, data=node_data, node_context=self.node_context)
         if not node:
             return None
 
-        node.from_dict(node_data)
         node.node_modified.connect(self._on_node_item_modified)
 
         self._items_map[node.id] = node
@@ -504,6 +798,11 @@ class InfiniteCanvas(QGraphicsView):
             else:
                 FrameService.cleanup_node_deletion(node_id, self._items_map)
 
+            # Cleanup all attached connectors (no orphan connectors)
+            attached_conns = [cid for cid, conn in self._connector_map.items() if conn.source_id == node_id or conn.target_id == node_id]
+            for cid in attached_conns:
+                self.remove_connector(cid)
+
             self._scene.removeItem(node)
             try:
                 self.node_removed.emit(node_id)
@@ -512,10 +811,152 @@ class InfiniteCanvas(QGraphicsView):
 
     remove_item = remove_node
 
-    def find_node(self, node_id: str) -> NodeItem:
-        return self._items_map.get(node_id)
+    def node(self, node_id: str) -> NodeItem:
+        """UUID-based lookup returning live NodeItem instance."""
+        return self._items_map.get(str(node_id))
 
-    find_item = find_node
+    find_node = node
+    find_item = node
+
+    # -------------------------------------------------------------------------
+    # Connector API (Delegated to ConnectionManager) & Drag Preview
+    # -------------------------------------------------------------------------
+
+    def connector(self, connector_id: str):
+        """UUID-based lookup returning live ConnectorItem instance."""
+        return self.connection_manager.connector(connector_id)
+
+    def connectors(self) -> list:
+        """Return list of all live ConnectorItem instances on the canvas."""
+        return self.connection_manager.connectors()
+
+    def add_connector(self, connector_data: dict):
+        """Instantiate and register a first-class ConnectorItem via ConnectionManager."""
+        conn = self.connection_manager.add_connector(connector_data)
+        if conn and not self._is_loading:
+            try:
+                self.node_added.emit(conn.to_dict())
+            except Exception:
+                pass
+        return conn
+
+    def remove_connector(self, connector_id: str) -> bool:
+        """Remove a ConnectorItem via ConnectionManager."""
+        res = self.connection_manager.remove_connector(connector_id)
+        if res and not self._is_loading:
+            try:
+                self.node_removed.emit(connector_id)
+            except Exception:
+                pass
+        return res
+
+    def connect_nodes(self, source_id: str, target_id: str, **kwargs):
+        """Convenience API to create a new ConnectorItem between source and target nodes."""
+        conn = self.connection_manager.connect_nodes(source_id, target_id, **kwargs)
+        if conn and not self._is_loading:
+            try:
+                self.node_added.emit(conn.to_dict())
+            except Exception:
+                pass
+        return conn
+
+    def selected_connectors(self) -> list:
+        """Return list of currently selected ConnectorItem instances."""
+        from ui.lab.connectors.connector_item import ConnectorItem
+        return [it for it in self._scene.selectedItems() if isinstance(it, ConnectorItem)]
+
+    def clear_connectors(self):
+        """Clear all connectors from scene and internal connector map."""
+        self.connection_manager.clear()
+
+    # -------------------------------------------------------------------------
+    # Interactive Connection Creation Drag Preview
+    # -------------------------------------------------------------------------
+
+    def start_connection_drag(self, source_node: NodeItem, source_anchor: str = "center", mouse_scene_pos: QPointF = None):
+        """Begin interactive connection preview from a source node anchor port."""
+        if not source_node:
+            return
+        self._drag_connection_start_node = source_node
+        self._drag_connection_start_anchor = source_anchor
+
+        if not self._drag_connection_preview_item:
+            self._drag_connection_preview_item = QGraphicsPathItem()
+            pen = QPen(QColor("#6366F1"), 2, Qt.DashLine)
+            pen.setCapStyle(Qt.RoundCap)
+            self._drag_connection_preview_item.setPen(pen)
+            self._drag_connection_preview_item.setZValue(-4)
+            self._scene.addItem(self._drag_connection_preview_item)
+
+        if mouse_scene_pos:
+            self.update_connection_drag(mouse_scene_pos)
+
+    def update_connection_drag(self, mouse_scene_pos: QPointF):
+        """Update live preview Bezier curve geometry following current mouse cursor position."""
+        if not self._drag_connection_start_node or not self._drag_connection_preview_item:
+            return
+
+        if hasattr(self._drag_connection_start_node, "get_anchor_scene_pos"):
+            src_pt = self._drag_connection_start_node.get_anchor_scene_pos(self._drag_connection_start_anchor)
+        else:
+            src_pt = self._drag_connection_start_node.sceneBoundingRect().center()
+
+        dx = mouse_scene_pos.x() - src_pt.x()
+        dy = mouse_scene_pos.y() - src_pt.y()
+        ctrl1 = QPointF(src_pt.x() + dx * 0.5, src_pt.y())
+        ctrl2 = QPointF(mouse_scene_pos.x() - dx * 0.5, mouse_scene_pos.y())
+
+        path = QPainterPath()
+        path.moveTo(src_pt)
+        path.cubicTo(ctrl1, ctrl2, mouse_scene_pos)
+        self._drag_connection_preview_item.setPath(path)
+
+    def finish_connection_drag(self, target_node: NodeItem, target_anchor: str = "center") -> bool:
+        """Complete connection drag by creating a permanent ConnectorItem and prompting for relationship type."""
+        src_node = self._drag_connection_start_node
+        src_anchor = self._drag_connection_start_anchor
+        self.cancel_connection_drag()
+
+        if src_node and target_node and src_node.id != target_node.id:
+            conn = self.connect_nodes(
+                src_node.id,
+                target_node.id,
+                source_anchor=src_anchor,
+                target_anchor=target_anchor
+            )
+            if conn:
+                self.prompt_connector_relationship_type(conn)
+            return conn is not None
+        return False
+
+    def prompt_connector_relationship_type(self, conn):
+        """Prompt user for relationship type immediately after creating connector using RelationshipPickerDialog."""
+        from ui.dialogs.relationship_picker_dialog import RelationshipPickerDialog
+        curr_type = getattr(conn, "relationship_type", "related_to") or "related_to"
+        dlg = RelationshipPickerDialog(parent=self, current_type_id=curr_type)
+        if dlg.exec_() == RelationshipPickerDialog.Accepted:
+            defn = dlg.selected_definition()
+            if defn:
+                self.connection_manager.change_type(conn.id, defn.id)
+
+    def prompt_relationship_type_change(self, conn):
+        """Prompt user to change relationship type via RelationshipPickerDialog palette."""
+        self.prompt_connector_relationship_type(conn)
+
+    def set_selected_connectors(self, connectors: list):
+        """Set active canvas selection to target list of connectors."""
+        self._scene.clearSelection()
+        for c in connectors:
+            c.setSelected(True)
+
+    def cancel_connection_drag(self):
+        """Cancel drag preview and remove temporary preview item from scene."""
+        if self._drag_connection_preview_item:
+            if self._drag_connection_preview_item in self._scene.items():
+                self._scene.removeItem(self._drag_connection_preview_item)
+            self._drag_connection_preview_item = None
+        self._drag_connection_start_node = None
+        self._drag_connection_start_anchor = "center"
 
     def selected_nodes(self) -> list:
         return [it for it in self._scene.selectedItems() if isinstance(it, NodeItem)]
@@ -536,6 +977,7 @@ class InfiniteCanvas(QGraphicsView):
                 node.setSelected(True)
 
     def clear_nodes(self):
+        self.clear_connectors()
         for node_id, node in list(self._items_map.items()):
             self._scene.removeItem(node)
         self._items_map.clear()
@@ -543,6 +985,13 @@ class InfiniteCanvas(QGraphicsView):
     clear_items = clear_nodes
 
     def _on_node_item_modified(self, node_dict: dict):
+        # Update path geometry of connected ConnectorItem instances
+        node_id = node_dict.get("id") if isinstance(node_dict, dict) else None
+        if node_id:
+            for conn in self._connector_map.values():
+                if conn.source_id == node_id or conn.target_id == node_id:
+                    conn.update_path()
+
         try:
             self.node_modified.emit(node_dict)
         except Exception:
@@ -556,6 +1005,49 @@ class InfiniteCanvas(QGraphicsView):
         scene_pos = self.mapToScene(event.pos())
         self._last_context_scene_pos = scene_pos
         item = self.itemAt(event.pos())
+
+        from ui.lab.connectors.connector_item import ConnectorItem
+        if isinstance(item, ConnectorItem):
+            if not item.isSelected():
+                self._scene.clearSelection()
+                item.setSelected(True)
+
+            menu = QMenu(self)
+            menu.setStyleSheet("""
+                QMenu {
+                    background-color: #1E2029;
+                    border: 1px solid #343847;
+                    border-radius: 6px;
+                    padding: 4px;
+                }
+                QMenu::item {
+                    color: #CBD5E1;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                }
+                QMenu::item:selected {
+                    background-color: #343847;
+                    color: #F1F5F9;
+                }
+            """)
+
+            def prompt_edit_label():
+                lbl, ok = QInputDialog.getText(self, "Edit Connector Label", "Label text:", text=item.label)
+                if ok:
+                    item.label = lbl.strip()
+                    item._emit_modified()
+
+            edit_lbl_act = QAction("✏️  Edit Label...", self)
+            edit_lbl_act.triggered.connect(prompt_edit_label)
+            menu.addAction(edit_lbl_act)
+
+            del_conn_act = QAction("🗑  Delete Connector", self)
+            del_conn_act.triggered.connect(lambda: self.remove_connector(item.id))
+            menu.addAction(del_conn_act)
+
+            menu.exec_(event.globalPos())
+            return
 
         # If right-clicked on a spatial node item, display node context menu
         if isinstance(item, NodeItem):
@@ -586,6 +1078,26 @@ class InfiniteCanvas(QGraphicsView):
                 item.on_context_menu(menu)
                 if not menu.isEmpty():
                     menu.addSeparator()
+
+            # Connection context actions
+            selected_nodes = self.selected_nodes()
+            other_selected = [n for n in selected_nodes if n.id != item.id]
+            if len(other_selected) == 1:
+                source_node = other_selected[0]
+                src_title = str(source_node.payload.get("title", "Node")) if hasattr(source_node, "payload") else "Node"
+                connect_act = QAction(f"🔗  Connect From Selected Node ('{src_title}')", self)
+                connect_act.triggered.connect(lambda checked=False, s=source_node, t=item: self.connect_nodes(s.id, t.id))
+                menu.addAction(connect_act)
+
+            attached_conns = [c for c in self._connector_map.values() if c.source_id == item.id or c.target_id == item.id]
+            if attached_conns:
+                disc_act = QAction("✂️  Disconnect Node", self)
+                def disconnect_target():
+                    for c in list(attached_conns):
+                        self.remove_connector(c.id)
+                disc_act.triggered.connect(disconnect_target)
+                menu.addAction(disc_act)
+                menu.addSeparator()
 
             # Attach / Detach Frame submenus for spatial non-frame nodes
             from ui.lab.nodes.frame_node_item import FrameNodeItem

@@ -141,8 +141,79 @@ class FrameService:
         return members
 
     @staticmethod
+    def set_collapsed(frame, collapsed: bool, scene: Optional[QGraphicsScene] = None) -> bool:
+        """Collapse or expand a Frame container.
+
+        Uses full payload["expanded_rect"] = {"x": pos.x(), "y": pos.y(), "width": w, "height": h}.
+        When collapsed:
+        - Stores current transform in payload["expanded_rect"].
+        - Shrinks frame height to HEADER_HEIGHT.
+        - Calls setVisible(False) and setSelected(False) on attached children.
+
+        When expanded:
+        - Restores dimensions from payload["expanded_rect"].
+        - Calls setVisible(True) on attached children.
+        """
+        if not frame or not hasattr(frame, "payload"):
+            return False
+
+        if bool(frame.payload.get("collapsed", False)) == collapsed:
+            return False
+
+        frame.payload["collapsed"] = bool(collapsed)
+        attached_members = FrameService.get_attached_nodes(frame, scene=scene)
+
+        pos = frame.pos() if hasattr(frame, "pos") and callable(frame.pos) else QPointF(0, 0)
+        curr_w = float(getattr(frame, "width", MIN_FRAME_WIDTH))
+        curr_h = float(getattr(frame, "height", MIN_FRAME_HEIGHT))
+
+        if collapsed:
+            # Store full expanded_rect payload
+            exp_rect = {
+                "x": round(pos.x(), 2),
+                "y": round(pos.y(), 2),
+                "width": round(curr_w, 2),
+                "height": round(max(MIN_FRAME_HEIGHT, curr_h), 2),
+            }
+            frame.payload["expanded_rect"] = exp_rect
+            frame.height = HEADER_HEIGHT
+
+            # Hide attached children and unselect them
+            for member in attached_members:
+                if hasattr(member, "setSelected") and member.isSelected():
+                    member.setSelected(False)
+                if hasattr(member, "setVisible"):
+                    member.setVisible(False)
+        else:
+            # Restore full expanded_rect dimensions
+            exp_rect = frame.payload.get("expanded_rect", {})
+            if isinstance(exp_rect, dict) and "height" in exp_rect:
+                target_h = float(exp_rect.get("height", MIN_FRAME_HEIGHT))
+            else:
+                target_h = float(getattr(frame, "_expanded_height", MIN_FRAME_HEIGHT))
+
+            frame.height = max(HEADER_HEIGHT + 40.0, target_h)
+
+            # Restore child visibility
+            for member in attached_members:
+                if hasattr(member, "setVisible"):
+                    member.setVisible(True)
+
+        if hasattr(frame, "_emit_modified"):
+            frame._emit_modified()
+        if hasattr(frame, "update"):
+            frame.update()
+        return True
+
+    @staticmethod
     def fit_to_contents(frame, scene: Optional[QGraphicsScene] = None, padding: float = FRAME_PADDING, header_h: float = HEADER_HEIGHT) -> bool:
-        """Auto-resize and reposition frame to enclose attached member nodes with padding."""
+        """Auto-resize and reposition frame over 250ms to enclose attached member nodes with padding.
+
+        Child spatial node positions are NEVER moved or altered.
+        """
+        if frame and hasattr(frame, "payload") and frame.payload.get("collapsed", False):
+            FrameService.set_collapsed(frame, False, scene=scene)
+
         nodes = FrameService.get_attached_nodes(frame, scene=scene)
         if not nodes:
             return False
@@ -152,21 +223,44 @@ class FrameService:
         max_x = max(node.sceneBoundingRect().right() for node in nodes)
         max_y = max(node.sceneBoundingRect().bottom() for node in nodes)
 
-        new_x = min_x - padding
-        new_y = min_y - header_h - padding
-        new_w = max(MIN_FRAME_WIDTH, (max_x - min_x) + (padding * 2.0))
-        new_h = max(MIN_FRAME_HEIGHT, (max_y - min_y) + header_h + (padding * 2.0))
+        target_x = min_x - padding
+        target_y = min_y - header_h - padding
+        target_w = max(MIN_FRAME_WIDTH, (max_x - min_x) + (padding * 2.0))
+        target_h = max(MIN_FRAME_HEIGHT, (max_y - min_y) + header_h + (padding * 2.0))
 
-        if hasattr(frame, "setPos"):
-            frame.setPos(new_x, new_y)
-        frame.width = float(new_w)
-        frame.height = float(new_h)
-        frame.payload["layout"] = {"width": frame.width, "height": frame.height}
+        start_x = frame.pos().x()
+        start_y = frame.pos().y()
+        start_w = frame.width
+        start_h = frame.height
 
-        if hasattr(frame, "_emit_modified"):
-            frame._emit_modified()
-        if hasattr(frame, "update"):
-            frame.update()
+        from PySide6.QtCore import QVariantAnimation, QEasingCurve
+        anim = QVariantAnimation(frame)
+        anim.setDuration(250)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def _step(progress):
+            cx = start_x + (target_x - start_x) * progress
+            cy = start_y + (target_y - start_y) * progress
+            cw = start_w + (target_w - start_w) * progress
+            ch = start_h + (target_h - start_h) * progress
+
+            if hasattr(frame, "setPos"):
+                frame.setPos(cx, cy)
+            frame.width = float(cw)
+            frame.height = float(ch)
+            frame.payload["layout"] = {"width": frame.width, "height": frame.height}
+            if hasattr(frame, "update"):
+                frame.update()
+
+        def _done():
+            if hasattr(frame, "_emit_modified"):
+                frame._emit_modified()
+
+        anim.valueChanged.connect(_step)
+        anim.finished.connect(_done)
+        anim.start()
         return True
 
     @staticmethod

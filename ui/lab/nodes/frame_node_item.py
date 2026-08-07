@@ -18,6 +18,7 @@ class FrameNodeItem(NodeItem):
     header styling, resizing, and user interaction.
     """
 
+    CHEVRON_HIT_WIDTH = 36.0
     CORNER_RADIUS = 12.0
     HEADER_HEIGHT = HEADER_HEIGHT
     HANDLE_SIZE = 14.0
@@ -194,6 +195,14 @@ class FrameNodeItem(NodeItem):
     def toggle_locked(self):
         self.set_locked(not self.payload.get("locked", False))
 
+    def set_collapsed(self, collapsed: bool):
+        """Collapse or expand frame via FrameService."""
+        return FrameService.set_collapsed(self, collapsed)
+
+    def toggle_collapsed(self):
+        """Toggle collapse/expand state."""
+        return self.set_collapsed(not bool(self.payload.get("collapsed", False)))
+
     def fit_to_contents(self):
         """Auto-resize and reposition frame to fit all attached child nodes via FrameService."""
         return FrameService.fit_to_contents(self)
@@ -221,7 +230,7 @@ class FrameNodeItem(NodeItem):
 
     def start_title_editing(self):
         """Open seamless inline title editor directly over header bar."""
-        scene_pos = self.mapToScene(QPointF(14, 4))
+        scene_pos = self.mapToScene(QPointF(32, 4))
         view = self.scene().views()[0] if (self.scene() and self.scene().views()) else None
         if not view:
             self.prompt_rename()
@@ -243,7 +252,7 @@ class FrameNodeItem(NodeItem):
                 font-weight: bold;
             }}
         """)
-        edit.resize(int(self.width - 28), int(self.HEADER_HEIGHT - 8))
+        edit.resize(int(self.width - 100), int(self.HEADER_HEIGHT - 8))
         edit.move(view_pos)
         edit.setFocus()
         edit.selectAll()
@@ -280,6 +289,8 @@ class FrameNodeItem(NodeItem):
             self.update()
 
     def _is_in_resize_handle(self, pos: QPointF) -> bool:
+        if bool(self.payload.get("collapsed", False)):
+            return False
         return (pos.x() >= self.width - self.HANDLE_SIZE) and (pos.y() >= self.height - self.HANDLE_SIZE)
 
     def hoverMoveEvent(self, event):
@@ -290,16 +301,25 @@ class FrameNodeItem(NodeItem):
         super().hoverMoveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
-            self._is_resizing = True
-            self._resize_start_pos = event.pos()
-            self._resize_start_size = (self.width, self.height)
-            event.accept()
-            return
+        if event.button() == Qt.LeftButton:
+            # 1. Left chevron hit test toggle
+            if event.pos().x() <= self.CHEVRON_HIT_WIDTH and event.pos().y() <= self.HEADER_HEIGHT:
+                self.toggle_collapsed()
+                event.accept()
+                return
+
+            # 2. Resizer handle press
+            if not self.payload.get("locked", False) and self._is_in_resize_handle(event.pos()):
+                self._is_resizing = True
+                self._resize_start_pos = event.pos()
+                self._resize_start_size = (self.width, self.height)
+                event.accept()
+                return
+
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._is_resizing and not self.payload.get("locked", False):
+        if self._is_resizing and not self.payload.get("locked", False) and not bool(self.payload.get("collapsed", False)):
             delta = event.pos() - self._resize_start_pos
             min_w, min_h = self.definition.minimum_size if self.definition else (MIN_FRAME_WIDTH, MIN_FRAME_HEIGHT)
             self.width = max(min_w, self._resize_start_size[0] + delta.x())
@@ -322,6 +342,7 @@ class FrameNodeItem(NodeItem):
     def mouseDoubleClickEvent(self, event):
         self.on_double_clicked(event)
         if event.button() == Qt.LeftButton:
+            # Double-click header opens inline title editor (deferred camera focus per directive)
             self.start_title_editing()
             event.accept()
             return
@@ -338,9 +359,11 @@ class FrameNodeItem(NodeItem):
         accent = QColor(colors["accent"])
         header_bg = QColor(colors["header_bg"])
         surface_bg = QColor(colors["surface_bg"])
-        surface_bg.setAlpha(30)  # Translucent surface fill
 
+        is_collapsed = bool(self.payload.get("collapsed", False))
         is_locked = bool(self.payload.get("locked", False))
+
+        surface_bg.setAlpha(15 if is_collapsed else 30)  # Darker surface when collapsed
 
         # Miro-Style Drag Hover Glow Highlight
         if self._is_drag_hovered:
@@ -382,30 +405,40 @@ class FrameNodeItem(NodeItem):
         painter.setPen(header_pen)
         painter.drawRoundedRect(header_rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
 
-        # 3. Horizontal Header Divider Line
-        divider_pen = QPen(QColor(colors["border"]))
-        divider_pen.setWidth(1)
-        painter.setPen(divider_pen)
-        painter.drawLine(0, int(self.HEADER_HEIGHT), int(self.width), int(self.HEADER_HEIGHT))
+        # 3. Horizontal Header Divider Line (only if expanded)
+        if not is_collapsed:
+            divider_pen = QPen(QColor(colors["border"]))
+            divider_pen.setWidth(1)
+            painter.setPen(divider_pen)
+            painter.drawLine(0, int(self.HEADER_HEIGHT), int(self.width), int(self.HEADER_HEIGHT))
 
-        # 4. Top Accent Strip & Header Title Text
+        # 4. Top Accent Strip & Chevron + Header Title Text
         accent_pen = QPen(accent)
         accent_pen.setWidth(3)
         painter.setPen(accent_pen)
         painter.drawLine(4, 4, 4, int(self.HEADER_HEIGHT - 4))
 
+        chevron_str = "▶ " if is_collapsed else "▼ "
         title_text = str(self.payload.get("title", "Section Frame"))
         icon_str = self.definition.icon if self.definition else "🖼️"
         lock_suffix = " 🔒" if is_locked else ""
-        header_text = f"{icon_str}  {title_text}{lock_suffix}"
+        header_text = f"{chevron_str}{icon_str}  {title_text}{lock_suffix}"
 
         painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
         painter.setPen(QPen(QColor(colors["badge_text"])))
-        text_rect = QRectF(14, 0, self.width - 24, self.HEADER_HEIGHT)
+        text_rect = QRectF(14, 0, self.width - 100, self.HEADER_HEIGHT)
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, header_text)
 
-        # 5. Bottom-Right Interactive Resize Handle (◢)
-        if not is_locked:
+        # Right Pill Badge showing attached child count
+        attached_count = len(self.attached_nodes())
+        badge_str = f"{attached_count} Nodes"
+        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        painter.setPen(QPen(QColor(colors["badge_text"]).lighter(120)))
+        badge_rect = QRectF(self.width - 95, 0, 85, self.HEADER_HEIGHT)
+        painter.drawText(badge_rect, Qt.AlignRight | Qt.AlignVCenter, badge_str)
+
+        # 5. Bottom-Right Interactive Resize Handle (◢) (only if not locked and expanded)
+        if not is_locked and not is_collapsed:
             handle_pen = QPen(accent)
             handle_pen.setWidth(2)
             painter.setPen(handle_pen)
@@ -413,8 +446,8 @@ class FrameNodeItem(NodeItem):
             painter.drawLine(w - 12, h - 4, w - 4, h - 12)
             painter.drawLine(w - 8, h - 4, w - 4, h - 8)
 
-        # 6. Membership Selection Visualization (Soft Glow Outline around Member Nodes)
-        if self.isSelected():
+        # 6. Membership Selection Visualization (Soft Glow Outline around Member Nodes when expanded)
+        if self.isSelected() and not is_collapsed:
             glow_pen = QPen(accent)
             glow_pen.setWidth(2)
             painter.setPen(glow_pen)
@@ -423,9 +456,10 @@ class FrameNodeItem(NodeItem):
             painter.setBrush(glow_brush)
 
             for member in self.attached_nodes():
-                member_scene_rect = member.sceneBoundingRect()
-                member_local_rect = self.mapRectFromScene(member_scene_rect)
-                painter.drawRoundedRect(member_local_rect.adjusted(-6, -6, 6, 6), 8, 8)
+                if hasattr(member, "isVisible") and member.isVisible():
+                    member_scene_rect = member.sceneBoundingRect()
+                    member_local_rect = self.mapRectFromScene(member_scene_rect)
+                    painter.drawRoundedRect(member_local_rect.adjusted(-6, -6, 6, 6), 8, 8)
 
         # 7. Selection Outline for Frame itself
         self.draw_selection_outline(painter, rect, self.CORNER_RADIUS)
@@ -433,6 +467,22 @@ class FrameNodeItem(NodeItem):
     def on_context_menu(self, menu: QMenu):
         """Build context menu for Frame node."""
         is_locked = bool(self.payload.get("locked", False))
+        is_collapsed = bool(self.payload.get("collapsed", False))
+
+        # Focus / Zoom Frame
+        action_focus = QAction("🔍 Focus Frame", menu)
+        scene_views = self.scene().views() if (self.scene() and self.scene().views()) else []
+        if scene_views and hasattr(scene_views[0], "focus_node"):
+            action_focus.triggered.connect(lambda: scene_views[0].focus_node(self))
+            menu.addAction(action_focus)
+
+        # Collapse / Expand Action
+        col_label = "↕️ Expand Frame" if is_collapsed else "↔️ Collapse Frame"
+        action_collapse = QAction(col_label, menu)
+        action_collapse.triggered.connect(self.toggle_collapsed)
+        menu.addAction(action_collapse)
+
+        menu.addSeparator()
 
         action_rename = QAction("✏️ Rename Frame...", menu)
         action_rename.triggered.connect(lambda: self.start_title_editing())

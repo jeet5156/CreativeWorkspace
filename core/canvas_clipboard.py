@@ -21,7 +21,7 @@ class CanvasClipboard:
         }
         self._paste_count: int = 0
 
-    def copy(self, nodes: List[Any]):
+    def copy(self, nodes: List[Any], connectors: Optional[List[dict]] = None):
         """Serialize a list of spatial NodeItem instances into JSON clipboard payload."""
         if not nodes:
             return
@@ -36,10 +36,22 @@ class CanvasClipboard:
                 except Exception:
                     pass
 
+        serialized_connectors = []
+        if connectors and isinstance(connectors, list):
+            for conn in connectors:
+                if isinstance(conn, dict):
+                    serialized_connectors.append(copy.deepcopy(conn))
+                elif hasattr(conn, "to_dict"):
+                    try:
+                        serialized_connectors.append(copy.deepcopy(conn.to_dict()))
+                    except Exception:
+                        pass
+
         self._data = {
             "type": CLIPBOARD_TYPE_HEADER,
             "version": CLIPBOARD_VERSION,
             "nodes": serialized_nodes,
+            "connectors": serialized_connectors,
         }
         # Reset cumulative paste count upon new copy
         self._paste_count = 0
@@ -49,6 +61,12 @@ class CanvasClipboard:
         if not self.has_content():
             return []
         return copy.deepcopy(self._data.get("nodes", []))
+
+    def get_connectors(self) -> List[Dict[str, Any]]:
+        """Return deep copy of stored JSON connector dictionaries if clipboard type header is valid."""
+        if not self.has_content():
+            return []
+        return copy.deepcopy(self._data.get("connectors", []))
 
     def has_content(self) -> bool:
         """Check if clipboard contains valid creativeworkspace payload with at least one node."""
