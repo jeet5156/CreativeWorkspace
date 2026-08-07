@@ -466,6 +466,7 @@ class FrameNodeItem(NodeItem):
 
     def on_context_menu(self, menu: QMenu):
         """Build context menu for Frame node."""
+        super().on_context_menu(menu)
         is_locked = bool(self.payload.get("locked", False))
         is_collapsed = bool(self.payload.get("collapsed", False))
 

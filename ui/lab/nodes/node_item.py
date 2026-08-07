@@ -39,8 +39,21 @@ class NodeItem(QGraphicsObject):
         self.is_hidden = False
         self.is_collapsed = False
         self.is_favorite = False
+        self.is_pinned = False
         self.tags = []
         self.version = 1
+
+        self.metadata = {
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "version": self.version,
+            "locked": self.is_locked,
+            "hidden": self.is_hidden,
+            "collapsed": self.is_collapsed,
+            "favorite": self.is_favorite,
+            "pinned": self.is_pinned,
+            "tags": list(self.tags),
+        }
 
         # Domain Payload Dictionary (Deep Copy to isolate nested schemas)
         self.payload = {}
@@ -58,6 +71,16 @@ class NodeItem(QGraphicsObject):
     def set_node_context(self, context: NodeContext):
         """Update standard shared context (ThumbnailService, project location, etc.)."""
         self.node_context = context or NodeContext()
+
+    def set_pinned(self, pinned: bool):
+        self.is_pinned = bool(pinned)
+        if isinstance(getattr(self, "metadata", None), dict):
+            self.metadata["pinned"] = self.is_pinned
+        self._emit_modified()
+        self.update()
+
+    def toggle_pinned(self):
+        self.set_pinned(not getattr(self, "is_pinned", False))
 
     # -------------------------------------------------------------------------
     # Node Lifecycle Hooks (Predictable Extensibility Interface)
@@ -94,9 +117,8 @@ class NodeItem(QGraphicsObject):
     def on_context_menu(self, menu):
         """Hook invoked when context menu is building for this spatial node."""
         from PySide6.QtGui import QAction
-        n_meta = getattr(self, "metadata", None)
-        is_pinned = bool(self.payload.get("pinned", False) or (isinstance(n_meta, dict) and n_meta.get("pinned", False)))
-        pin_lbl = "📌 Unpin Node" if is_pinned else "📌 Pin Node"
+        is_pinned = getattr(self, "is_pinned", False)
+        pin_lbl = "📍 Unpin Node" if is_pinned else "📌 Pin Node"
 
         pin_act = QAction(pin_lbl, menu)
         conn_act = QAction("🔗 Select Connected Nodes", menu)
@@ -111,13 +133,7 @@ class NodeItem(QGraphicsObject):
 
         def _handle(action):
             if action == pin_act:
-                new_pin = not is_pinned
-                self.payload["pinned"] = new_pin
-                meta = getattr(self, "metadata", None)
-                if isinstance(meta, dict):
-                    meta["pinned"] = new_pin
-                self.update()
-                self._emit_modified()
+                self.toggle_pinned()
             elif action in (conn_act, hl_act, focus_act):
                 if hasattr(self.scene(), "views") and self.scene().views():
                     canvas = self.scene().views()[0]
@@ -298,6 +314,19 @@ class NodeItem(QGraphicsObject):
     def to_dict(self) -> dict:
         self._log_state("BEFORE to_dict()")
         pos = self.pos()
+        if not isinstance(getattr(self, "metadata", None), dict):
+            self.metadata = {}
+        self.metadata.update({
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "version": self.version,
+            "locked": self.is_locked,
+            "hidden": self.is_hidden,
+            "collapsed": self.is_collapsed,
+            "favorite": self.is_favorite,
+            "pinned": self.is_pinned,
+            "tags": list(self.tags),
+        })
         res = {
             "id": self.id,
             "type": self.definition.type_id if self.definition else "node.unknown",
@@ -313,16 +342,7 @@ class NodeItem(QGraphicsObject):
                 "background": self.background_color,
                 "accent": self.definition.accent_color if self.definition else "#6366F1",
             },
-            "metadata": {
-                "created_at": self.created_at,
-                "updated_at": self.updated_at,
-                "version": self.version,
-                "locked": self.is_locked,
-                "hidden": self.is_hidden,
-                "collapsed": self.is_collapsed,
-                "favorite": self.is_favorite,
-                "tags": list(self.tags),
-            },
+            "metadata": dict(self.metadata),
             "payload": copy.deepcopy(self.payload),
         }
         self._log_state("AFTER to_dict()")
@@ -360,6 +380,8 @@ class NodeItem(QGraphicsObject):
         # Restore Engine Metadata
         metadata = data.get("metadata", {})
         if isinstance(metadata, dict):
+            if "pinned" not in metadata:
+                metadata["pinned"] = False
             self.created_at = str(metadata.get("created_at", self.created_at))
             self.updated_at = str(metadata.get("updated_at", self.updated_at))
             self.version = int(metadata.get("version", self.version))
@@ -367,7 +389,11 @@ class NodeItem(QGraphicsObject):
             self.is_hidden = bool(metadata.get("hidden", self.is_hidden))
             self.is_collapsed = bool(metadata.get("collapsed", self.is_collapsed))
             self.is_favorite = bool(metadata.get("favorite", self.is_favorite))
+            self.is_pinned = bool(metadata.get("pinned", self.is_pinned))
             self.tags = list(metadata.get("tags", self.tags))
+            if not isinstance(getattr(self, "metadata", None), dict):
+                self.metadata = {}
+            self.metadata.update(metadata)
 
         # Restore Domain Payload
         payload = data.get("payload", {})
@@ -376,7 +402,7 @@ class NodeItem(QGraphicsObject):
         self._log_state("AFTER from_dict()")
 
     # -------------------------------------------------------------------------
-    # Visual Helpers (Tag Chips & Clean Anchor Ports)
+    # Visual Helpers (Tag Chips, Pinned Vector Badge & Clean Anchor Ports)
     # -------------------------------------------------------------------------
 
     def draw_tag_badges(self, painter, rect: QRectF):
@@ -417,6 +443,28 @@ class NodeItem(QGraphicsObject):
 
         painter.restore()
 
+    def draw_pinned_badge(self, painter, rect: QRectF):
+        """Render crisp QPainter vector pin badge at top-right corner of node header."""
+        if getattr(self, "is_pinned", False):
+            badge_size = 14.0
+            bx = rect.right() - badge_size - 8.0
+            by = rect.top() + 7.0
+            badge_rect = QRectF(bx, by, badge_size, badge_size)
+
+            painter.save()
+            painter.setRenderHint(painter.RenderHint.Antialiasing if hasattr(painter, "RenderHint") else QPainter.Antialiasing)
+            bg_color = QColor("#F59E0B")
+            bg_color.setAlpha(45)
+            painter.setBrush(QBrush(bg_color))
+            painter.setPen(QPen(QColor("#F59E0B"), 1.2))
+            painter.drawEllipse(badge_rect)
+
+            dot_rect = QRectF(bx + 4.0, by + 4.0, 6.0, 6.0)
+            painter.setBrush(QBrush(QColor("#FBBF24")))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(dot_rect)
+            painter.restore()
+
     def draw_anchor_ports(self, painter, rect: QRectF):
         """Paint small anchor handle ports ONLY when node is selected or hovered to keep canvas clean."""
         if not (self.isSelected() or self.isUnderMouse()):
@@ -436,6 +484,7 @@ class NodeItem(QGraphicsObject):
         painter.restore()
 
     def draw_selection_outline(self, painter, rect: QRectF, radius: float = 8.0):
+        self.draw_pinned_badge(painter, rect)
         if self.isSelected():
             pen = QPen(QColor("#6366F1"))
             pen.setWidth(2)

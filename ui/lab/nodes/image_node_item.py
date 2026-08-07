@@ -388,6 +388,7 @@ class ImageNodeItem(NodeItem):
 
     def on_context_menu(self, menu):
         """Build artist-friendly context menu for Reference Image nodes."""
+        super().on_context_menu(menu)
         from PySide6.QtGui import QAction, QGuiApplication
 
         abs_path = self._resolve_abs_path()

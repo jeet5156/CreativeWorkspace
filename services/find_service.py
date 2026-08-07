@@ -46,4 +46,20 @@ class FindService:
         except Exception:
             pass
 
+        # Rank results: 1. Exact title matches, 2. Pinned items, 3. Normal relevance
+        def rank_key(item):
+            label = item.get("label", "")
+            is_exact = (label.lower().strip() == q.lower())
+            proj = item.get("project")
+            is_pinned = False
+            if proj and getattr(proj, "is_pinned", False):
+                is_pinned = True
+            elif item.get("is_pinned") or item.get("pinned"):
+                is_pinned = True
+            return (not is_exact, not is_pinned, label.lower())
+
+        results["projects"].sort(key=rank_key)
+        results["assets"].sort(key=rank_key)
+        results["references"].sort(key=rank_key)
+
         return results
