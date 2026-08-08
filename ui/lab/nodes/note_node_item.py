@@ -25,6 +25,8 @@ class NoteTextEditor(QTextEdit):
     editing_finished = Signal()
     editing_canceled = Signal()
     text_changed_live = Signal()
+    checkbox_clicked = Signal(int)
+    wiki_link_clicked = Signal(str, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,6 +68,29 @@ class NoteTextEditor(QTextEdit):
     def _on_contents_changed(self):
         if self._is_editing:
             self.text_changed_live.emit()
+
+    def mousePressEvent(self, event):
+        if not self._is_editing and event.button() == Qt.LeftButton:
+            anchor = self.anchorAt(event.pos())
+            if anchor and anchor.startswith("toggle_check:"):
+                try:
+                    line_idx = int(anchor.split(":")[1])
+                    self.checkbox_clicked.emit(line_idx)
+                    event.accept()
+                    return
+                except Exception:
+                    pass
+            elif anchor and anchor.startswith("wiki_link:"):
+                target = anchor.split(":", 1)[1]
+                self.wiki_link_clicked.emit(target, False)
+                event.accept()
+                return
+            elif anchor and anchor.startswith("wiki_link_missing:"):
+                target = anchor.split(":", 1)[1]
+                self.wiki_link_clicked.emit(target, True)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if self._is_editing:
@@ -162,9 +187,107 @@ class NoteNodeItem(NodeItem):
         self.editor.editing_finished.connect(self._commit_note_editing)
         self.editor.editing_canceled.connect(self._cancel_note_editing)
         self.editor.text_changed_live.connect(self._update_card_height)
+        self.editor.checkbox_clicked.connect(self._on_checkbox_clicked)
+        self.editor.wiki_link_clicked.connect(self._on_wiki_link_clicked)
 
         # Backward compatibility alias
         self.text_item = self.editor
+
+    def _get_existing_canvas_titles(self) -> set:
+        existing_titles = set()
+        if hasattr(self.scene(), "views") and self.scene().views():
+            canvas = self.scene().views()[0]
+            if hasattr(canvas, "_items_map"):
+                for item in canvas._items_map.values():
+                    if item:
+                        t = item.payload.get("title") if isinstance(item.payload, dict) else None
+                        if not t and getattr(item, "definition", None):
+                            t = item.definition.title
+                        if t:
+                            existing_titles.add(str(t))
+        return existing_titles
+
+    def _render_preview(self):
+        """Render raw markdown into QTextDocument passing current canvas node titles for live wiki link styling."""
+        content = str(self.payload.get("content", ""))
+        existing_titles = self._get_existing_canvas_titles()
+        MarkdownRenderer.render_to_document(content, self.editor.document(), existing_node_titles=existing_titles)
+        self._update_card_height()
+
+    def _on_checkbox_clicked(self, line_index: int):
+        """Toggle checkbox at line_index in raw markdown and re-render preview."""
+        if self.editor._is_editing:
+            return
+        from core.markdown_document import MarkdownDocument
+        raw_text = str(self.payload.get("content", ""))
+        updated_raw = MarkdownDocument.toggle_checkbox_at_line(raw_text, line_index)
+        if updated_raw != raw_text:
+            self.payload["content"] = updated_raw
+            self.editor.setPlainText(updated_raw)
+            self._render_preview()
+            self._emit_modified()
+
+    def _on_wiki_link_clicked(self, target_title: str, is_missing: bool):
+        if self.editor._is_editing:
+            return
+
+        if not is_missing:
+            if hasattr(self.scene(), "views") and self.scene().views():
+                canvas = self.scene().views()[0]
+                target_node = self._find_node_by_title(canvas, target_title)
+                if target_node:
+                    canvas.set_selected_nodes([target_node])
+                    canvas.focus_node(target_node)
+        else:
+            self.create_linked_node(target_title)
+
+    def _find_node_by_title(self, canvas, title: str):
+        if not canvas or not hasattr(canvas, "_items_map"):
+            return None
+        t_lower = title.lower().strip()
+        for node in canvas._items_map.values():
+            if not node:
+                continue
+            n_title = node.payload.get("title") if isinstance(node.payload, dict) else None
+            if not n_title and getattr(node, "definition", None):
+                n_title = node.definition.title
+            if n_title and str(n_title).lower().strip() == t_lower:
+                return node
+        return None
+
+    def create_linked_node(self, target_title: str):
+        """Create a new linked Blank Note on the canvas for a missing wiki link."""
+        if not hasattr(self.scene(), "views") or not self.scene().views():
+            return
+        canvas = self.scene().views()[0]
+        new_x = self.pos().x() + self.width + 40.0
+        new_y = self.pos().y()
+
+        new_node = canvas.add_node({
+            "type": "note.blank",
+            "transform": {"x": new_x, "y": new_y, "width": 260.0, "height": 180.0},
+            "payload": {"title": target_title, "content": f"# {target_title}\n\nLinked from {self.payload.get('title', 'Note')}"}
+        })
+        if new_node:
+            canvas.set_selected_nodes([new_node])
+            canvas.focus_node(new_node)
+            self._render_preview()
+
+    def on_context_menu(self, menu):
+        super().on_context_menu(menu)
+        from core.markdown_document import MarkdownDocument
+        from PySide6.QtGui import QAction
+
+        raw_content = str(self.payload.get("content", ""))
+        existing_titles = self._get_existing_canvas_titles()
+        missing_targets = MarkdownDocument.extract_missing_wiki_links(raw_content, existing_titles)
+
+        if missing_targets:
+            menu.addSeparator()
+            for target in missing_targets:
+                act = QAction(f"➕ Create Linked Node: {target}", menu)
+                act.triggered.connect(lambda checked=False, t=target: self.create_linked_node(t))
+                menu.addAction(act)
 
     def boundingRect(self) -> QRectF:
         return QRectF(0, 0, self.width, self.height)
@@ -219,11 +342,7 @@ class NoteNodeItem(NodeItem):
         self.draw_selection_outline(painter, rect, self.CORNER_RADIUS)
 
     def _update_card_height(self):
-        """Recalculate card height based on QTextDocument content height to ensure zero text overflow.
-
-        Enforces min height=180px, max height=900px, preserves user manual resize height, and matches preview width.
-        Width remains entirely user-controlled. Enables internal vertical scrollbar when clamped at 900px.
-        """
+        """Recalculate card height based on QTextDocument content height to ensure zero text overflow."""
         MIN_HEIGHT = 180.0
         MAX_HEIGHT = 900.0
 
@@ -274,8 +393,7 @@ class NoteNodeItem(NodeItem):
             return
         raw_text = self.editor.finish_editing()
         self.payload["content"] = raw_text
-        MarkdownRenderer.render_to_document(raw_text, self.editor.document())
-        self._update_card_height()
+        self._render_preview()
         self._emit_modified()
 
     # Backward compatibility alias
@@ -288,8 +406,7 @@ class NoteNodeItem(NodeItem):
         content = self._pre_edit_content if hasattr(self, "_pre_edit_content") else ""
         self.payload["content"] = content
         self.editor.cancel_editing(content)
-        MarkdownRenderer.render_to_document(content, self.editor.document())
-        self._update_card_height()
+        self._render_preview()
         self._emit_modified()
 
     # Backward compatibility alias
@@ -312,7 +429,6 @@ class NoteNodeItem(NodeItem):
 
         content = str(self.payload.get("content", ""))
         self.editor.setPlainText(content)
-        MarkdownRenderer.render_to_document(content, self.editor.document())
-        self._update_card_height()
+        self._render_preview()
         self.on_loaded()
         self.update()
