@@ -357,6 +357,80 @@ class NodeInspectable(InspectableObject):
                     InspectableField("payload.collapsed", "Collapsed", "boolean", value=bool(payload.get("collapsed", False))),
                 ]
                 sections.append(InspectableSection("Frame Properties", frame_fields))
+            elif defn and defn.type_id == "file.reference" or "file_path" in payload:
+                abs_path_val = payload.get("absolute_path") or payload.get("file_path") or payload.get("image_path") or "No file selected"
+                filename_val = payload.get("filename") or payload.get("file_name") or ""
+                size_val = payload.get("file_size_str") or "Unknown"
+                ext_val = payload.get("extension") or ""
+
+                file_fields = [
+                    InspectableField("payload.file", "Original File", "readonly", value=filename_val if filename_val else str(abs_path_val)),
+                    InspectableField("payload.path", "Original Path", "readonly", value=str(abs_path_val)),
+                    InspectableField("payload.extension", "Extension", "readonly", value=str(ext_val)),
+                    InspectableField("payload.file_size", "File Size", "readonly", value=str(size_val)),
+                    InspectableField("payload.title", "Title", "string", value=str(payload.get("title", ""))),
+                    InspectableField("payload.caption", "Caption", "text", value=str(payload.get("caption", ""))),
+                ]
+                sections.append(InspectableSection("File Reference Properties", file_fields))
+            elif defn and defn.type_id == "folder.reference" or "folder_path" in payload:
+                abs_path_val = payload.get("absolute_path") or payload.get("folder_path") or payload.get("image_path") or "No directory selected"
+                foldername_val = payload.get("foldername") or payload.get("filename") or payload.get("file_name") or ""
+
+                folder_fields = [
+                    InspectableField("payload.folder", "Folder", "readonly", value=foldername_val if foldername_val else str(abs_path_val)),
+                    InspectableField("payload.path", "Original Path", "readonly", value=str(abs_path_val)),
+                    InspectableField("payload.title", "Title", "string", value=str(payload.get("title", ""))),
+                    InspectableField("payload.caption", "Caption", "text", value=str(payload.get("caption", ""))),
+                ]
+                sections.append(InspectableSection("Folder Reference Properties", folder_fields))
+            elif defn and defn.type_id == "archive.reference" or "archive_path" in payload:
+                abs_path_val = payload.get("absolute_path") or payload.get("archive_path") or payload.get("image_path") or "No archive selected"
+                filename_val = payload.get("filename") or payload.get("file_name") or ""
+                size_val = payload.get("file_size_str") or "Unknown"
+                ext_val = payload.get("extension") or ""
+
+                archive_fields = [
+                    InspectableField("payload.archive", "Archive", "readonly", value=filename_val if filename_val else str(abs_path_val)),
+                    InspectableField("payload.path", "Original Path", "readonly", value=str(abs_path_val)),
+                    InspectableField("payload.extension", "Extension", "readonly", value=str(ext_val)),
+                    InspectableField("payload.file_size", "File Size", "readonly", value=str(size_val)),
+                    InspectableField("payload.title", "Title", "string", value=str(payload.get("title", ""))),
+                    InspectableField("payload.caption", "Caption", "text", value=str(payload.get("caption", ""))),
+                ]
+                sections.append(InspectableSection("Archive Reference Properties", archive_fields))
+            elif defn and defn.type_id == "asset.3d" or "asset_path" in payload:
+                abs_path_val = payload.get("absolute_path") or payload.get("asset_path") or payload.get("image_path") or "No file selected"
+                filename_val = payload.get("filename") or payload.get("file_name") or ""
+                size_val = payload.get("file_size_str") or "Unknown"
+                format_lbl = payload.get("format_label") or (payload.get("extension") or "").upper() or "3D Model"
+
+                threed_fields = [
+                    InspectableField("payload.file", "Original File", "readonly", value=filename_val if filename_val else str(abs_path_val)),
+                    InspectableField("payload.path", "Original Path", "readonly", value=str(abs_path_val)),
+                    InspectableField("payload.format", "Format", "readonly", value=str(format_lbl)),
+                    InspectableField("payload.file_size", "File Size", "readonly", value=str(size_val)),
+                    InspectableField("payload.title", "Title", "string", value=str(payload.get("title", ""))),
+                    InspectableField("payload.caption", "Caption", "text", value=str(payload.get("caption", ""))),
+                ]
+                sections.append(InspectableSection("3D Asset Properties", threed_fields))
+            elif defn and defn.type_id == "document.pdf" or "pdf_path" in payload:
+                abs_path_val = payload.get("absolute_path") or payload.get("pdf_path") or payload.get("image_path") or "No file selected"
+                filename_val = payload.get("filename") or payload.get("file_name") or ""
+                size_val = payload.get("file_size_str") or "Unknown"
+                page_cnt = payload.get("page_count", 0)
+                pages_val = f"{page_cnt} pages" if page_cnt > 0 else "Unknown"
+                mode_val = payload.get("display_mode", "icon")
+
+                pdf_fields = [
+                    InspectableField("payload.file", "Original File", "readonly", value=filename_val if filename_val else str(abs_path_val)),
+                    InspectableField("payload.path", "Original Path", "readonly", value=str(abs_path_val)),
+                    InspectableField("payload.file_size", "File Size", "readonly", value=str(size_val)),
+                    InspectableField("payload.page_count", "Page Count", "readonly", value=pages_val),
+                    InspectableField("payload.display_mode", "Display Mode", "enum", value=str(mode_val), options=["icon", "preview"]),
+                    InspectableField("payload.title", "Title", "string", value=str(payload.get("title", ""))),
+                    InspectableField("payload.caption", "Caption", "text", value=str(payload.get("caption", ""))),
+                ]
+                sections.append(InspectableSection("PDF Properties", pdf_fields))
             elif "image_path" in payload or "absolute_path" in payload:
                 abs_path_val = payload.get("absolute_path") or payload.get("image_path") or "No file selected"
                 filename_val = payload.get("filename") or payload.get("file_name") or ""
