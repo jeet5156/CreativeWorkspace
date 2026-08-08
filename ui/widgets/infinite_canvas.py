@@ -97,6 +97,17 @@ class InfiniteCanvas(QGraphicsView):
         from ui.lab.drop.drop_router import DropRouter
         self.drop_router = DropRouter()
         self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        self._back_shortcut = QShortcut(QKeySequence(Qt.ALT | Qt.Key_Left), self)
+        self._back_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._back_shortcut.activated.connect(self._on_shortcut_go_back)
+
+        self._forward_shortcut = QShortcut(QKeySequence(Qt.ALT | Qt.Key_Right), self)
+        self._forward_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._forward_shortcut.activated.connect(self._on_shortcut_go_forward)
 
         # Center view at scene origin initially
         self.centerOn(0, 0)
@@ -243,6 +254,59 @@ class InfiniteCanvas(QGraphicsView):
 
     center_on_node = focus_node
     zoom_to_rect = focus_node
+
+    def fit_selection(self, padding: float = 50.0):
+        """Fit viewport to combined bounding rect of currently selected spatial nodes."""
+        selected = self.selected_nodes()
+        if not selected:
+            return
+
+        if len(selected) == 1:
+            self.focus_node(selected[0], padding=padding)
+            return
+
+        min_x = min(node.sceneBoundingRect().left() for node in selected)
+        min_y = min(node.sceneBoundingRect().top() for node in selected)
+        max_x = max(node.sceneBoundingRect().right() for node in selected)
+        max_y = max(node.sceneBoundingRect().bottom() for node in selected)
+
+        rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y).adjusted(-padding, -padding, padding, padding)
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        self._zoom_level = self.transform().m11()
+        self.viewport().update()
+        self._emit_camera_changed()
+
+    def fit_view(self, padding: float = 50.0):
+        """Fit viewport to combined bounding rect of all spatial nodes on the canvas."""
+        nodes = list(self._items_map.values())
+        if not nodes:
+            self.reset_camera()
+            return
+
+        min_x = min(node.sceneBoundingRect().left() for node in nodes)
+        min_y = min(node.sceneBoundingRect().top() for node in nodes)
+        max_x = max(node.sceneBoundingRect().right() for node in nodes)
+        max_y = max(node.sceneBoundingRect().bottom() for node in nodes)
+
+        rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y).adjusted(-padding, -padding, padding, padding)
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        self._zoom_level = self.transform().m11()
+        self.viewport().update()
+        self._emit_camera_changed()
+
+    fit_all = fit_view
+
+    def reveal_parent_frame_if_needed(self, node):
+        """If node is attached to a collapsed frame, expand the parent frame via FrameService."""
+        if not node or not hasattr(node, "payload") or not isinstance(node.payload, dict):
+            return
+        parent_id = node.payload.get("parent_frame_id")
+        if parent_id and parent_id in self._items_map:
+            parent_frame = self._items_map[parent_id]
+            if hasattr(parent_frame, "payload") and isinstance(parent_frame.payload, dict):
+                if parent_frame.payload.get("collapsed", False):
+                    from services.frame_service import FrameService
+                    FrameService.set_collapsed(parent_frame, False, scene=self.scene())
 
     # -------------------------------------------------------------------------
     # Panning & Mouse Interactions
@@ -578,6 +642,35 @@ class InfiniteCanvas(QGraphicsView):
                 event.accept()
                 return
 
+        # Home / Ctrl+0 -> Reset Camera
+        if key == Qt.Key_Home or (mods & Qt.ControlModifier and key == Qt.Key_0):
+            self.reset_camera()
+            event.accept()
+            return
+
+        # Shift+F -> Fit View / Fit All
+        if (mods & Qt.ShiftModifier) and key == Qt.Key_F:
+            self.fit_view()
+            event.accept()
+            return
+        elif key == Qt.Key_F and not mods:
+            if self.selected_nodes():
+                self.fit_selection()
+            else:
+                self.fit_view()
+            event.accept()
+            return
+
+        # + / = -> Zoom In, - -> Zoom Out
+        if key in (Qt.Key_Plus, Qt.Key_Equal) and not (mods & (Qt.ControlModifier | Qt.AltModifier)):
+            self.zoom_in()
+            event.accept()
+            return
+        elif key == Qt.Key_Minus and not (mods & (Qt.ControlModifier | Qt.AltModifier)):
+            self.zoom_out()
+            event.accept()
+            return
+
         if key == Qt.Key_Escape:
             self.clear_neighbor_highlight()
             self.clear_selection()
@@ -722,6 +815,7 @@ class InfiniteCanvas(QGraphicsView):
         if not sv:
             return
 
+        self.push_navigation_state()
         start_center = self.mapToScene(self.viewport().rect().center())
         target_center = QPointF(sv.camera_x, sv.camera_y)
         start_zoom = self._zoom_level
@@ -755,11 +849,25 @@ class InfiniteCanvas(QGraphicsView):
         dlg.node_selected.connect(self._on_search_node_selected)
         dlg.exec_()
 
+    def _on_shortcut_go_back(self):
+        if not self.is_editing_text():
+            self.go_back_history()
+
+    def _on_shortcut_go_forward(self):
+        if not self.is_editing_text():
+            self.go_forward_history()
+
     def _on_search_node_selected(self, node_id: str):
         node = self.node(node_id)
         if node:
+            # Capture current starting location if back stack is empty
+            if not self.nav_history_service._back_stack:
+                self.push_navigation_state()
+
+            self.reveal_parent_frame_if_needed(node)
             self.set_selected_nodes([node])
             self.focus_node(node)
+            self.push_navigation_state(node_id)
 
     def _emit_camera_changed(self):
         try:
@@ -1179,11 +1287,16 @@ class InfiniteCanvas(QGraphicsView):
                                 move_menu.addAction(act)
                     menu.addSeparator()
 
-            # Multi-Selection Actions (Create Frame from Selection, Batch Pin/Unpin, Batch Tagging)
+            # Multi-Selection Actions (Create Frame from Selection, Batch Pin/Unpin, Batch Tagging, Fit Selection)
             selected_nodes = self.selected_nodes()
 
             if len(selected_nodes) > 1:
                 menu.addSeparator()
+
+                # Navigation: Fit Selection
+                fit_sel_act = QAction("🔍  Fit Selection", self)
+                fit_sel_act.triggered.connect(lambda: self.fit_selection())
+                menu.addAction(fit_sel_act)
 
                 # 1. Create Frame from Selection
                 create_frame_act = QAction("🖼️  Create Frame from Selection", self)
@@ -1225,8 +1338,21 @@ class InfiniteCanvas(QGraphicsView):
 
                 menu.addSeparator()
             elif len(selected_nodes) == 1:
-                # Single node context action for Create Frame from Selection
                 menu.addSeparator()
+
+                if isinstance(item, FrameNodeItem):
+                    focus_frame_act = QAction("🔍  Focus Frame", self)
+                    focus_frame_act.triggered.connect(lambda checked=False, f=item: self.focus_node(f))
+                    menu.addAction(focus_frame_act)
+
+                    fit_contents_act = QAction("↔️  Fit Frame Contents", self)
+                    fit_contents_act.triggered.connect(lambda checked=False, f=item: FrameService.fit_to_contents(f, scene=self.scene()))
+                    menu.addAction(fit_contents_act)
+                else:
+                    focus_node_act = QAction("🔍  Focus Node", self)
+                    focus_node_act.triggered.connect(lambda checked=False, n=item: self.focus_node(n))
+                    menu.addAction(focus_node_act)
+
                 create_frame_act = QAction("🖼️  Create Frame from Selection", self)
                 create_frame_act.triggered.connect(lambda: FrameService.create_frame_from_selection(selected_nodes, self))
                 menu.addAction(create_frame_act)
@@ -1249,7 +1375,7 @@ class InfiniteCanvas(QGraphicsView):
 
         menu = NodeRegistry.build_context_menu(self, scene_pos, self._create_node_from_def)
 
-        # Prepend Canvas Edit Actions (Paste, Select All, Clear Selection)
+        # Canvas Edit Actions (Paste, Select All, Clear Selection)
         paste_act = QAction("📋  Paste", self)
         paste_act.setEnabled(self.clipboard.has_content())
         paste_act.triggered.connect(lambda: self.execute_command(CanvasCommand.PASTE, mouse_pos=scene_pos))
@@ -1260,14 +1386,27 @@ class InfiniteCanvas(QGraphicsView):
         clear_sel_act = QAction("🚫  Clear Selection", self)
         clear_sel_act.triggered.connect(lambda: self.execute_command(CanvasCommand.CLEAR_SELECTION))
 
+        # Background Navigation Actions
+        home_act = QAction("🏠  Home View", self)
+        home_act.triggered.connect(self.reset_camera)
+
+        fit_all_act = QAction("🔍  Fit All Nodes", self)
+        fit_all_act.triggered.connect(self.fit_view)
+
         actions = menu.actions()
         if actions:
             first_act = actions[0]
+            menu.insertAction(first_act, home_act)
+            menu.insertAction(first_act, fit_all_act)
+            menu.insertSeparator(first_act)
             menu.insertAction(first_act, paste_act)
             menu.insertAction(first_act, select_all_act)
             menu.insertAction(first_act, clear_sel_act)
             menu.insertSeparator(first_act)
         else:
+            menu.addAction(home_act)
+            menu.addAction(fit_all_act)
+            menu.addSeparator()
             menu.addAction(paste_act)
             menu.addAction(select_all_act)
             menu.addAction(clear_sel_act)
