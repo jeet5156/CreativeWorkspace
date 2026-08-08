@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import tempfile
 import shutil
 from pathlib import Path
@@ -30,16 +31,16 @@ class TestConnectorFoundation(unittest.TestCase):
         self.assertIsNotNone(conn)
         self.assertEqual(conn.source_id, n1.id)
         self.assertEqual(conn.target_id, n2.id)
-        self.assertEqual(conn.label, "Connection")
+        self.assertEqual(conn.label, "Related To")
         self.assertEqual(conn.style, "bezier")
-        self.assertEqual(conn.color, "#FF0000")
-        self.assertEqual(conn.width, 3)
+        self.assertEqual(conn.color, "#8A8A8A")
+        self.assertEqual(conn.width, 2)
 
         # Zero geometry serialization check
         conn_dict = conn.to_dict()
         self.assertIn("id", conn_dict)
-        self.assertIn("source_id", conn_dict)
-        self.assertIn("target_id", conn_dict)
+        self.assertIn("source_node_id", conn_dict)
+        self.assertIn("target_node_id", conn_dict)
         self.assertIn("metadata", conn_dict)
         self.assertNotIn("path", conn_dict)
         self.assertNotIn("points", conn_dict)
@@ -122,18 +123,18 @@ class TestConnectorFoundation(unittest.TestCase):
         conn = self.canvas.connect_nodes(n1.id, n2.id, label="Old Label")
 
         adapter = ConnectorInspectable(conn)
-        self.assertEqual(adapter.get_display_name(), "Line: Old Label")
+        self.assertEqual(adapter.get_display_name(), "Relationship: Related To")
 
         sections = adapter.get_inspection_sections()
         self.assertEqual(len(sections), 2)
 
-        # Modify label via adapter
-        adapter.set_inspectable_property("label", "New Label")
-        self.assertEqual(conn.label, "New Label")
+        # Modify relationship type via adapter
+        adapter.set_inspectable_property("relationship_type", "Depends On")
+        self.assertEqual(conn.relationship_type, "depends_on")
 
-        # Modify width via adapter
-        adapter.set_inspectable_property("width", 5)
-        self.assertEqual(conn.width, 5)
+        # Modify weight via adapter
+        adapter.set_inspectable_property("weight", 3.0)
+        self.assertEqual(conn.relationship.weight, 3.0)
 
     def test_connection_manager_decoupling(self):
         """Verify ConnectionManager owns connector lifecycle and node index lookup cleanly."""
@@ -149,13 +150,13 @@ class TestConnectorFoundation(unittest.TestCase):
         self.assertEqual(conn.target_anchor, "bottom")
 
         # Verify node attachment index lookup
-        attached = cm.get_connectors_for_node(n1.id)
+        attached = cm.get_node_relationships(n1.id)
         self.assertEqual(len(attached), 1)
         self.assertEqual(attached[0].id, conn.id)
 
         # Remove connectors for node
-        removed_ids = cm.remove_connectors_for_node(n1.id)
-        self.assertEqual(removed_ids, [conn.id])
+        removed_count = cm.remove_all_for_node(n1.id)
+        self.assertEqual(removed_count, 1)
         self.assertEqual(len(cm.connectors()), 0)
 
     def test_node_anchor_system(self):
@@ -169,10 +170,10 @@ class TestConnectorFoundation(unittest.TestCase):
         self.assertIn("left", anchors)
         self.assertIn("right", anchors)
 
-        # Center in scene coords should be (200, 150)
+        # Center in scene coords should be (200, 190)
         center_pos = n.get_anchor_scene_pos("center")
         self.assertEqual(center_pos.x(), 200.0)
-        self.assertEqual(center_pos.y(), 150.0)
+        self.assertEqual(center_pos.y(), 190.0)
 
         # Closest anchor test
         best_id, _ = n.get_closest_anchor(QPointF(200.0, 90.0))
@@ -195,9 +196,11 @@ class TestConnectorFoundation(unittest.TestCase):
 
         # Finish preview check
         self.canvas.start_connection_drag(n1, source_anchor="right", mouse_scene_pos=QPointF(100, 50))
-        created = self.canvas.finish_connection_drag(n2, target_anchor="left")
-        self.assertTrue(created)
-        self.assertEqual(len(self.canvas.connectors()), 1)
+        with patch.object(self.canvas, 'prompt_connector_relationship_type') as mock_prompt:
+            created = self.canvas.finish_connection_drag(n2, target_anchor="left")
+            self.assertTrue(created)
+            self.assertEqual(len(self.canvas.connectors()), 1)
+            mock_prompt.assert_called_once()
 
 
 if __name__ == "__main__":
