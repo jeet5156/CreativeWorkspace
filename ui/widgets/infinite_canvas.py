@@ -93,8 +93,58 @@ class InfiniteCanvas(QGraphicsView):
         self._pan_start = QPoint()
         self._space_pressed = False
 
+        # Drag & Drop Router Subsystem Adapter
+        from ui.lab.drop.drop_router import DropRouter
+        self.drop_router = DropRouter()
+        self.setAcceptDrops(True)
+
         # Center view at scene origin initially
         self.centerOn(0, 0)
+
+    # -------------------------------------------------------------------------
+    # Drag & Drop Adapter Event Handlers
+    # -------------------------------------------------------------------------
+
+    def dragEnterEvent(self, event):
+        from ui.lab.drop.drop_context import DropContext
+        pos = self.mapToScene(event.position().toPoint() if hasattr(event, "position") else event.pos())
+        proj_loc = self.node_context.project_location if hasattr(self, "node_context") and self.node_context else None
+        context = DropContext(event.mimeData(), pos, project_location=proj_loc)
+
+        if self.drop_router.can_route(context):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        from ui.lab.drop.drop_context import DropContext
+        pos = self.mapToScene(event.position().toPoint() if hasattr(event, "position") else event.pos())
+        proj_loc = self.node_context.project_location if hasattr(self, "node_context") and self.node_context else None
+        context = DropContext(event.mimeData(), pos, project_location=proj_loc)
+
+        if self.drop_router.can_route(context):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        from ui.lab.drop.drop_context import DropContext
+        pos = self.mapToScene(event.position().toPoint() if hasattr(event, "position") else event.pos())
+        proj_loc = self.node_context.project_location if hasattr(self, "node_context") and self.node_context else None
+        context = DropContext(event.mimeData(), pos, project_location=proj_loc)
+
+        nodes_data = self.drop_router.route_drop(context)
+        if nodes_data:
+            self.clear_selection()
+            created_nodes = []
+            for node_data in nodes_data:
+                node = self.add_node(node_data)
+                if node:
+                    node.setSelected(True)
+                    created_nodes.append(node)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
     # -------------------------------------------------------------------------
     # Camera & Viewport API

@@ -34,6 +34,7 @@ class ImageNodeItem(NodeItem):
     """
 
     CORNER_RADIUS = 8.0
+    VALIDATION_COOLDOWN_SECONDS = 1.5
 
     def __init__(self, definition: NodeDefinition, parent=None):
         super().__init__(definition, parent=parent)
@@ -42,6 +43,7 @@ class ImageNodeItem(NodeItem):
         self._pixmap = None
         self._thumb_service = None
         self._project_location = None
+        self._last_validated_time = 0.0
 
         # Ensure layout dict in payload schema
         if "layout" not in self.payload or not isinstance(self.payload["layout"], dict):
@@ -50,6 +52,51 @@ class ImageNodeItem(NodeItem):
                 "width": float(self.width),
                 "height": float(self.height),
             }
+
+    def validate_reference(self, force: bool = False) -> bool:
+        """Event-driven lazy validation of image reference file existence with cooldown throttling.
+
+        Updates node state to MISSING if file was deleted/renamed, or recovers to READY/LOADING
+        if a missing file is restored, without continuous polling or paint() I/O.
+        """
+        import time
+        now = time.time()
+        if not force and (now - self._last_validated_time) < self.VALIDATION_COOLDOWN_SECONDS:
+            return self.state != ImageNodeState.MISSING
+
+        self._last_validated_time = now
+
+        img_path = self.payload.get("image_path") or self.payload.get("absolute_path")
+        if not img_path:
+            if self.state != ImageNodeState.EMPTY:
+                self.state = ImageNodeState.EMPTY
+                self._pixmap = None
+                self.update()
+            return False
+
+        abs_path = self._resolve_abs_path()
+        exists = abs_path is not None and abs_path.exists() and abs_path.is_file()
+
+        if not exists:
+            if self.state != ImageNodeState.MISSING:
+                self.state = ImageNodeState.MISSING
+                self._pixmap = None
+                self.update()
+            return False
+
+        # File exists on disk
+        if self.state in (ImageNodeState.MISSING, ImageNodeState.ERROR, ImageNodeState.EMPTY):
+            # Recovery: File was previously missing/error/empty, now available again!
+            try:
+                sz = abs_path.stat().st_size
+                self.payload["file_size_str"] = self._format_size_bytes(sz)
+            except Exception:
+                pass
+            self._request_thumbnail()
+        elif self.state == ImageNodeState.READY and self._pixmap is None:
+            self._request_thumbnail()
+
+        return True
 
     @property
     def thumb_service(self):
@@ -108,10 +155,19 @@ class ImageNodeItem(NodeItem):
             self.state = ImageNodeState.EMPTY
             self._pixmap = None
 
+    def _format_size_bytes(self, size_bytes: int) -> str:
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        else:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+
     def set_image(self, image_path: str, project_location: str = None):
-        """Programmatic API to set or replace image. Computes relative path and aspect ratio."""
+        """Programmatic API to set or replace image. Computes relative path, absolute path, extension, cached file size, and aspect ratio."""
         self._log_state(f"BEFORE set_image({image_path})")
         log_debug(f"[SET_IMAGE] self.id={self.id}, old_path={self.payload.get('image_path')}, new_path={image_path}")
+        self._last_validated_time = 0.0
         if project_location:
             self._project_location = project_location
             if self.node_context:
@@ -119,7 +175,11 @@ class ImageNodeItem(NodeItem):
 
         if not image_path:
             self.payload["image_path"] = ""
+            self.payload["absolute_path"] = ""
             self.payload["filename"] = ""
+            self.payload["file_name"] = ""
+            self.payload["extension"] = ""
+            self.payload["file_size_str"] = ""
             self.state = ImageNodeState.EMPTY
             self._pixmap = None
             self._emit_modified()
@@ -128,15 +188,27 @@ class ImageNodeItem(NodeItem):
             return
 
         abs_path = Path(image_path).resolve()
+        self.payload["absolute_path"] = str(abs_path)
+        self.payload["filename"] = abs_path.name
+        self.payload["file_name"] = abs_path.name
+        self.payload["extension"] = abs_path.suffix.lower()
+
         if not abs_path.exists():
             self.payload["image_path"] = str(image_path)
-            self.payload["filename"] = abs_path.name
+            self.payload["file_size_str"] = ""
             self.state = ImageNodeState.MISSING
             self._pixmap = None
             self._emit_modified()
             self.update()
             self._log_state("AFTER set_image(missing)")
             return
+
+        # Cache file size string to avoid filesystem overhead on every paint event
+        try:
+            sz = abs_path.stat().st_size
+            self.payload["file_size_str"] = self._format_size_bytes(sz)
+        except Exception:
+            self.payload["file_size_str"] = ""
 
         # Relative path resolution against project root if applicable
         rel_path = str(abs_path)
@@ -150,7 +222,6 @@ class ImageNodeItem(NodeItem):
                 pass
 
         self.payload["image_path"] = rel_path
-        self.payload["filename"] = abs_path.name
         self.state = ImageNodeState.LOADING
 
         # Calculate image dimensions and aspect ratio via QImageReader header
@@ -177,17 +248,23 @@ class ImageNodeItem(NodeItem):
         self._log_state(f"AFTER set_image({image_path})")
 
     def prompt_choose_image(self, parent_widget=None):
-        """Open file dialog to choose or replace an image file."""
+        """Open file dialog to choose, locate, or replace an image file."""
         file_path, _ = QFileDialog.getOpenFileName(
             parent_widget,
             "Select Reference Image",
             "",
-            "Image Files (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.webp *.gif *.tiff *.tif);;All Files (*)"
         )
         if file_path:
             self.set_image(file_path)
 
     def _resolve_abs_path(self) -> Path:
+        abs_val = self.payload.get("absolute_path")
+        if abs_val:
+            p_abs = Path(abs_val)
+            if p_abs.exists():
+                return p_abs
+
         rel_or_abs = self.payload.get("image_path")
         if not rel_or_abs:
             return None
@@ -210,7 +287,7 @@ class ImageNodeItem(NodeItem):
     def _request_thumbnail(self):
         abs_path = self._resolve_abs_path()
         if not abs_path or not abs_path.exists():
-            if self.payload.get("image_path"):
+            if self.payload.get("image_path") or self.payload.get("absolute_path"):
                 self.state = ImageNodeState.MISSING
             else:
                 self.state = ImageNodeState.EMPTY
@@ -314,7 +391,10 @@ class ImageNodeItem(NodeItem):
 
         painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
         painter.setPen(QPen(badge_text_color))
-        header_text = f"{defn.icon}  Reference" if defn else "🖼 Reference"
+
+        fname = self.payload.get("filename") or self.payload.get("file_name")
+        icon = defn.icon if defn else "🖼"
+        header_text = f"{icon}  {fname}" if fname else f"{icon}  Reference"
         painter.drawText(badge_rect, Qt.AlignCenter, header_text)
 
         # Content Area below header (y=34 to height-10)
@@ -327,10 +407,10 @@ class ImageNodeItem(NodeItem):
             painter.drawText(content_rect, Qt.AlignCenter, "🖼\nDouble Click\nto Choose Image")
 
         elif self.state == ImageNodeState.MISSING:
-            painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
             painter.setPen(QPen(QColor("#EF4444")))
-            filename = self.payload.get("filename") or "Image"
-            painter.drawText(content_rect, Qt.AlignCenter, f"⚠️\nImage Missing\n{filename}")
+            filename = self.payload.get("filename") or self.payload.get("file_name") or "Image"
+            painter.drawText(content_rect, Qt.AlignCenter, f"⚠️ Missing Image\n\n{filename}\nFile no longer exists\n\n[ Locate File ]")
 
         elif self.state == ImageNodeState.LOADING:
             painter.setFont(QFont("Segoe UI", 9))
@@ -347,14 +427,19 @@ class ImageNodeItem(NodeItem):
             title = self.payload.get("title", "")
             caption = self.payload.get("caption", "")
 
-            if title or caption:
-                annotation_h = 32.0
-                preview_rect.setHeight(max(20.0, content_rect.height() - annotation_h))
-                text_rect = QRectF(content_rect.left(), preview_rect.bottom() + 4, content_rect.width(), annotation_h - 4)
+            # Show metadata footer (format & size) if no user caption title override
+            ext_upper = (self.payload.get("extension") or "").replace(".", "").upper() or "IMAGE"
+            size_str = self.payload.get("file_size_str", "")
+            footer_meta = f"{ext_upper} • {size_str}" if size_str else ext_upper
 
-                painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
-                painter.setPen(QPen(QColor("#F1F5F9")))
-                disp_text = title if title else caption
+            if title or caption or footer_meta:
+                annotation_h = 24.0
+                preview_rect.setHeight(max(20.0, content_rect.height() - annotation_h))
+                text_rect = QRectF(content_rect.left(), preview_rect.bottom() + 2, content_rect.width(), annotation_h - 2)
+
+                painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
+                painter.setPen(QPen(QColor("#94A3B8")))
+                disp_text = title if title else (caption if caption else footer_meta)
                 painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, disp_text)
 
             fit_mode = self.payload.get("fit_mode", "fit")
@@ -378,10 +463,23 @@ class ImageNodeItem(NodeItem):
         # 5. Draw Selection Ring
         self.draw_selection_outline(painter, rect, self.CORNER_RADIUS)
 
+    def on_selected(self):
+        super().on_selected()
+        self.validate_reference()
+
+    def hoverEnterEvent(self, event):
+        self.validate_reference()
+        super().hoverEnterEvent(event)
+
     def mouseDoubleClickEvent(self, event):
         self.on_double_clicked(event)
         if event.button() == Qt.LeftButton:
-            self.prompt_choose_image()
+            valid = self.validate_reference(force=True)
+            abs_path = self._resolve_abs_path()
+            if valid and abs_path and abs_path.exists() and abs_path.is_file():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(abs_path)))
+            else:
+                self.prompt_choose_image()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -403,17 +501,21 @@ class ImageNodeItem(NodeItem):
             menu.addAction(action_reveal)
 
             rel_path = self.payload.get("image_path", "")
-            action_copy = QAction("📋 Copy Relative Path", menu)
-            action_copy.triggered.connect(lambda: QGuiApplication.clipboard().setText(rel_path))
+            action_copy = QAction("📋 Copy Path", menu)
+            action_copy.triggered.connect(lambda: QGuiApplication.clipboard().setText(rel_path or str(abs_path)))
             menu.addAction(action_copy)
 
             menu.addSeparator()
+
+        action_relink = QAction("📍 Locate / Relink Image...", menu)
+        action_relink.triggered.connect(lambda: self.prompt_choose_image())
+        menu.addAction(action_relink)
 
         action_replace = QAction("🔄 Replace Image...", menu)
         action_replace.triggered.connect(lambda: self.prompt_choose_image())
         menu.addAction(action_replace)
 
-        if self.payload.get("image_path"):
+        if self.payload.get("image_path") or self.payload.get("absolute_path"):
             action_clear = QAction("❌ Clear Image", menu)
             action_clear.triggered.connect(lambda: self.set_image(""))
             menu.addAction(action_clear)
@@ -440,3 +542,4 @@ class ImageNodeItem(NodeItem):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(abs_path.parent)))
         except Exception:
             pass
+

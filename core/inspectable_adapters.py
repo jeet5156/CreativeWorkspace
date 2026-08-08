@@ -357,8 +357,14 @@ class NodeInspectable(InspectableObject):
                     InspectableField("payload.collapsed", "Collapsed", "boolean", value=bool(payload.get("collapsed", False))),
                 ]
                 sections.append(InspectableSection("Frame Properties", frame_fields))
-            elif "image_path" in payload:
+            elif "image_path" in payload or "absolute_path" in payload:
+                abs_path_val = payload.get("absolute_path") or payload.get("image_path") or "No file selected"
+                filename_val = payload.get("filename") or payload.get("file_name") or ""
+                size_val = payload.get("file_size_str") or "Unknown"
                 general_fields = [
+                    InspectableField("payload.file", "Original File", "readonly", value=filename_val if filename_val else str(abs_path_val)),
+                    InspectableField("payload.path", "Original Path", "readonly", value=str(abs_path_val)),
+                    InspectableField("payload.file_size", "File Size", "readonly", value=str(size_val)),
                     InspectableField("payload.title", "Title", "string", value=str(payload.get("title", ""))),
                     InspectableField("payload.caption", "Caption", "text", value=str(payload.get("caption", ""))),
                     InspectableField("payload.fit_mode", "Fit Mode", "enum", value=str(payload.get("fit_mode", "fit")), options=["fit", "fill"]),
