@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QImage, QTextCursor
 
-from ui.lab.nodes.note_node_item import NoteNodeItem, NoteTextItem
+from ui.lab.nodes.note_node_item import NoteNodeItem
 from ui.lab.nodes.node_definition import NodeDefinition
 from services.thumbnail_service import ThumbnailService
 

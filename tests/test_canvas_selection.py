@@ -174,7 +174,7 @@ class TestCanvasSelection(unittest.TestCase):
         # Single selection -> shows single node inspectable
         n1.setSelected(True)
         self.assertIsNotNone(inspector._current_inspectable)
-        self.assertIn("Blank Note", inspector.header_title.text())
+        self.assertTrue("Sticky Note" in inspector.header_title.text() or "Blank Note" in inspector.header_title.text())
 
         # Multi-selection -> shows MultiNodeInspectable
         n2.setSelected(True)

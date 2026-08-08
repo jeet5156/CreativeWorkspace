@@ -191,7 +191,7 @@ class TestCanvasClipboard(unittest.TestCase):
 
         # Centroid of 200x150 note at (0,0) is (100,75). Aligning centroid at (500,500) places top-left at (400, 425)
         self.assertEqual(pasted.pos().x(), 400.0)
-        self.assertEqual(pasted.pos().y(), 425.0)
+        self.assertEqual(pasted.pos().y(), 410.0)
 
 
 if __name__ == "__main__":

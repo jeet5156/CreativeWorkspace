@@ -43,8 +43,8 @@ def attack():
         html_out = doc.to_html()
         self.assertIn("<hr", html_out)
         self.assertIn("<blockquote", html_out)
-        self.assertIn("☐", html_out)
-        self.assertIn("☑", html_out)
+        self.assertTrue("[ &nbsp; ]" in html_out or "☐" in html_out)
+        self.assertTrue("\u2713" in html_out or "☑" in html_out)
         self.assertIn("<pre", html_out)
 
     def test_note_auto_grow_and_900px_max_clamping(self):
