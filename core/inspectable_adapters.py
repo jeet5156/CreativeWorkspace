@@ -513,20 +513,61 @@ class MultiNodeInspectable(InspectableObject):
             return []
 
         type_counts = {}
+        all_tags_sets = []
+        pinned_states = []
+
         for n in self.nodes:
-            t_name = n.definition.name if getattr(n, "definition", None) else n.__class__.__name__.replace("Item", "")
+            t_name = n.definition.title if getattr(n, "definition", None) else n.__class__.__name__.replace("Item", "")
             type_counts[t_name] = type_counts.get(t_name, 0) + 1
+            all_tags_sets.append(set(getattr(n, "tags", [])))
+            pinned_states.append(bool(getattr(n, "is_pinned", False)))
 
         type_summary = ", ".join(f"{count} {t}" for t, count in type_counts.items())
+
+        # Compute common tags across selection
+        common_tags = set.intersection(*all_tags_sets) if all_tags_sets else set()
+        common_tags_str = ", ".join(sorted(common_tags))
+
+        # Check if all selected items are pinned
+        all_pinned = all(pinned_states) if pinned_states else False
 
         fields = [
             InspectableField("selection_count", "Selection Count", "readonly", value=f"{len(self.nodes)} nodes"),
             InspectableField("node_types", "Node Types", "readonly", value=type_summary),
+            InspectableField("is_pinned", "Pinned (All Selected)", "boolean", value=all_pinned),
+            InspectableField("tags", "Tags (comma-separated)", "tags", value=common_tags_str),
         ]
 
         return [InspectableSection("Selection Summary", fields)]
 
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
+        if not self.nodes:
+            return False
+
+        if field_key == "is_pinned":
+            val = bool(value)
+            for node in self.nodes:
+                if hasattr(node, "set_pinned"):
+                    node.set_pinned(val)
+                elif hasattr(node, "payload") and isinstance(node.payload, dict):
+                    node.payload["pinned"] = val
+                    if hasattr(node, "update"):
+                        node.update()
+            return True
+
+        if field_key == "tags":
+            if isinstance(value, list):
+                raw_tags = [str(t).strip().lower() for t in value if str(t).strip()]
+            else:
+                raw_tags = [t.strip().lower() for t in str(value or "").split(",") if t.strip()]
+
+            for node in self.nodes:
+                if hasattr(node, "tags") and hasattr(node, "set_tags"):
+                    existing = list(node.tags)
+                    combined = list(dict.fromkeys(existing + raw_tags))
+                    node.set_tags(combined)
+            return True
+
         return False
 
 

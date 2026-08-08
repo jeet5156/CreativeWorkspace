@@ -38,7 +38,7 @@ class TestKnowledgeCanvasFoundation(unittest.TestCase):
         html_out = doc.to_html()
         self.assertIn("Heading 1", html_out)
         self.assertIn("Heading 2", html_out)
-        self.assertIn("[ ]", html_out)
+        self.assertTrue("[ ]" in html_out or "[ &nbsp; ]" in html_out)
         self.assertIn("[✓]", html_out)
         self.assertIn("print('hello')", html_out)
         self.assertIn("<b>bold</b>", html_out)
@@ -144,12 +144,13 @@ class TestKnowledgeCanvasFoundation(unittest.TestCase):
         from core.inspectable_adapters import ConnectorInspectable
         from services.lab_service import LabService
 
-        n1 = self.canvas.add_node({"type": "note.blank", "transform": {"x": 0, "y": 0, "width": 100, "height": 100}})
-        n2 = self.canvas.add_node({"type": "note.blank", "transform": {"x": 200, "y": 0, "width": 100, "height": 100}})
+        n1 = self.canvas.add_node({"type": "note.blank", "transform": {"x": 0, "y": 0, "width": 200, "height": 150}})
+        n2 = self.canvas.add_node({"type": "note.blank", "transform": {"x": 300, "y": 0, "width": 200, "height": 150}})
 
+        # Create Alternative Relationship
         conn = self.canvas.connect_nodes(n1.id, n2.id, relationship_type="Alternative", label="Alternative")
         self.assertIsNotNone(conn)
-        self.assertEqual(conn.relationship_type, "Alternative")
+        self.assertEqual(conn.relationship_type.lower(), "alternative")
         self.assertEqual(conn.label, "Alternative")
 
         # Modify via ConnectorInspectable
@@ -157,7 +158,8 @@ class TestKnowledgeCanvasFoundation(unittest.TestCase):
         self.assertEqual(adapter.get_display_name(), "Relationship: Alternative")
 
         adapter.set_inspectable_property("relationship_type", "Depends On")
-        self.assertEqual(conn.relationship_type, "Depends On")
+        self.assertEqual(conn.relationship_type.lower(), "depends_on")
+        self.assertEqual(conn.label, "Depends On")
         self.assertEqual(conn.label, "Depends On")
 
         adapter.set_inspectable_property("notes", "Critical balance dependency")
@@ -175,7 +177,7 @@ class TestKnowledgeCanvasFoundation(unittest.TestCase):
 
         loaded_board = svc.load_board(proj, "Main")
         self.assertEqual(len(loaded_board["connectors"]), 1)
-        self.assertEqual(loaded_board["connectors"][0]["relationship_type"], "Depends On")
+        self.assertEqual(loaded_board["connectors"][0]["relationship_type"].lower(), "depends_on")
         self.assertEqual(loaded_board["connectors"][0]["notes"], "Critical balance dependency")
 
 

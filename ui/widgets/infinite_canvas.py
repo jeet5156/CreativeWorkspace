@@ -1179,6 +1179,59 @@ class InfiniteCanvas(QGraphicsView):
                                 move_menu.addAction(act)
                     menu.addSeparator()
 
+            # Multi-Selection Actions (Create Frame from Selection, Batch Pin/Unpin, Batch Tagging)
+            selected_nodes = self.selected_nodes()
+
+            if len(selected_nodes) > 1:
+                menu.addSeparator()
+
+                # 1. Create Frame from Selection
+                create_frame_act = QAction("🖼️  Create Frame from Selection", self)
+                create_frame_act.triggered.connect(lambda: FrameService.create_frame_from_selection(selected_nodes, self))
+                menu.addAction(create_frame_act)
+
+                # 2. Batch Pin / Unpin
+                has_unpinned = any(not getattr(n, "is_pinned", False) for n in selected_nodes)
+                has_pinned = any(bool(getattr(n, "is_pinned", False)) for n in selected_nodes)
+
+                if has_unpinned:
+                    pin_batch_act = QAction("📌  Pin Selected Nodes", self)
+                    def _pin_all():
+                        for n in selected_nodes:
+                            if hasattr(n, "set_pinned"):
+                                n.set_pinned(True)
+                    pin_batch_act.triggered.connect(_pin_all)
+                    menu.addAction(pin_batch_act)
+
+                if has_pinned:
+                    unpin_batch_act = QAction("📍  Unpin Selected Nodes", self)
+                    def _unpin_all():
+                        for n in selected_nodes:
+                            if hasattr(n, "set_pinned"):
+                                n.set_pinned(False)
+                    unpin_batch_act.triggered.connect(_unpin_all)
+                    menu.addAction(unpin_batch_act)
+
+                # 3. Batch Tagging
+                from PySide6.QtWidgets import QInputDialog
+                tag_batch_act = QAction("🏷️  Add Tags to Selected Nodes...", self)
+                def _prompt_batch_tags():
+                    from core.inspectable_adapters import MultiNodeInspectable
+                    text, ok = QInputDialog.getText(self, "Add Tags to Selection", "Enter tags (comma-separated):")
+                    if ok and text.strip():
+                        MultiNodeInspectable(selected_nodes).set_inspectable_property("tags", text.strip())
+                tag_batch_act.triggered.connect(_prompt_batch_tags)
+                menu.addAction(tag_batch_act)
+
+                menu.addSeparator()
+            elif len(selected_nodes) == 1:
+                # Single node context action for Create Frame from Selection
+                menu.addSeparator()
+                create_frame_act = QAction("🖼️  Create Frame from Selection", self)
+                create_frame_act.triggered.connect(lambda: FrameService.create_frame_from_selection(selected_nodes, self))
+                menu.addAction(create_frame_act)
+                menu.addSeparator()
+
             copy_act = QAction("📄  Copy", self)
             copy_act.triggered.connect(lambda: self.execute_command(CanvasCommand.COPY))
             menu.addAction(copy_act)

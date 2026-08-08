@@ -265,6 +265,69 @@ class FrameService:
         return True
 
     @staticmethod
+    def create_frame_from_selection(selected_nodes: list, canvas, title: str = "Section Frame", padding: float = FRAME_PADDING, header_h: float = HEADER_HEIGHT):
+        """Calculate bounding rectangle enclosing selected nodes, create new 'frame.section' node, and attach selected nodes.
+
+        Selected spatial node positions are NEVER altered or recreated.
+        Newly created frame becomes the selected item on canvas.
+        """
+        import uuid
+        if not selected_nodes or not canvas:
+            return None
+
+        from ui.lab.nodes.frame_node_item import FrameNodeItem
+        nodes_to_wrap = [n for n in selected_nodes if not isinstance(n, FrameNodeItem)]
+        if not nodes_to_wrap:
+            nodes_to_wrap = list(selected_nodes)
+
+        min_x = min(node.sceneBoundingRect().left() for node in nodes_to_wrap)
+        min_y = min(node.sceneBoundingRect().top() for node in nodes_to_wrap)
+        max_x = max(node.sceneBoundingRect().right() for node in nodes_to_wrap)
+        max_y = max(node.sceneBoundingRect().bottom() for node in nodes_to_wrap)
+
+        target_x = min_x - padding
+        target_y = min_y - header_h - padding
+        target_w = max(MIN_FRAME_WIDTH, (max_x - min_x) + (padding * 2.0))
+        target_h = max(MIN_FRAME_HEIGHT, (max_y - min_y) + header_h + (padding * 2.0))
+
+        frame_data = {
+            "id": str(uuid.uuid4()),
+            "type": "frame.section",
+            "transform": {
+                "x": round(target_x, 2),
+                "y": round(target_y, 2),
+                "z": -1,
+                "width": round(target_w, 2),
+                "height": round(target_h, 2),
+                "rotation": 0.0,
+            },
+            "style": {
+                "background": "#1E2029",
+                "accent": "#A855F7",
+            },
+            "metadata": {
+                "version": 1,
+                "locked": False,
+            },
+            "payload": {
+                "title": title,
+                "color_theme": "purple",
+                "collapsed": False,
+                "child_node_ids": [],
+            }
+        }
+
+        frame_item = canvas.add_node(frame_data)
+        if not frame_item:
+            return None
+
+        for node in nodes_to_wrap:
+            FrameService.attach_node(frame_item, node, scene=canvas.scene())
+
+        canvas.set_selected_nodes([frame_item])
+        return frame_item
+
+    @staticmethod
     def cleanup_node_deletion(node_id: str, items_map_or_scene) -> None:
         """Garbage collect deleted node ID from parent frame child_node_ids."""
         items = []
