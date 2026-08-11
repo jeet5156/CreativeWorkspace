@@ -17,7 +17,9 @@ class LabService(QObject):
 
     def get_boards_dir(self, project) -> Path:
         if not project or not getattr(project, "location", None):
-            raise ValueError("Invalid project")
+            global_dir = Path.home() / ".creativeworkspace" / "workbench" / "boards"
+            global_dir.mkdir(parents=True, exist_ok=True)
+            return global_dir
         boards_dir = Path(project.location) / "Lab" / "boards"
         boards_dir.mkdir(parents=True, exist_ok=True)
         return boards_dir
@@ -426,4 +428,233 @@ class LabService(QObject):
             return False
         board_data["items"] = new_items
         return self.save_board(project, board_data, board_id_or_name=identifier)
+
+    def get_project_summary_metadata(self, project) -> dict:
+        """Derive live aggregated metadata across all project or global Workbench boards without duplicating persistence.
+
+        Fast, lightweight, and fault-tolerant against corrupt or unreadable board files.
+        """
+        if project is not None and not getattr(project, "location", None):
+            return {
+                "boards": [],
+                "pinned_nodes": [],
+                "all_tags": [],
+                "task_stats": {"total": 0, "completed": 0, "pending": 0, "items": []},
+                "total_nodes": 0,
+            }
+
+        try:
+            boards = self.list_boards(project)
+        except Exception:
+            boards = []
+
+        pinned_nodes = []
+        all_tags = set()
+        total_nodes = 0
+        task_total = 0
+        task_completed = 0
+        task_items = []
+        board_summaries = []
+
+        for b in boards:
+            if not isinstance(b, dict):
+                continue
+            b_id = b.get("id")
+            b_name = b.get("name", "Untitled")
+            if not b_id:
+                continue
+
+            try:
+                board_data = self.load_board(project, b_id)
+            except Exception:
+                board_data = {}
+
+            items = board_data.get("items", []) if isinstance(board_data, dict) else []
+            if not isinstance(items, list):
+                items = []
+
+            total_nodes += len(items)
+
+            board_summaries.append({
+                "id": b_id,
+                "name": b_name,
+                "item_count": len(items),
+                "modified": b.get("modified", ""),
+                "favorite": b.get("favorite", False),
+                "icon": b.get("icon", None),
+                "color": b.get("color", None),
+            })
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+
+                # Extract tags
+                item_tags = item.get("tags") or item.get("metadata", {}).get("tags") or []
+                if isinstance(item_tags, (list, tuple, set)):
+                    for t in item_tags:
+                        if t and isinstance(t, str):
+                            all_tags.add(t.strip())
+
+                # Extract attention
+                payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                attn = item.get("attention") or payload.get("attention") or item.get("metadata", {}).get("attention") or "normal"
+
+                # Extract pinned
+                is_pinned = item.get("is_pinned") or item.get("metadata", {}).get("pinned") or False
+                if is_pinned:
+                    try:
+                        item_copy = dict(item)
+                        item_copy["_board_name"] = b_name
+                        item_copy["_board_id"] = b_id
+                        item_copy["_attention"] = attn
+                        pinned_nodes.append(item_copy)
+                    except Exception:
+                        pass
+
+                # Extract note checklist tasks
+                content = payload.get("content", "")
+                if content and isinstance(content, str):
+                    for line in content.splitlines():
+                        l = line.strip()
+                        if l.startswith("- [ ]") or l.startswith("* [ ]") or l.startswith("+ [ ]") or l.startswith("[ ]"):
+                            task_total += 1
+                            txt = l.replace("- [ ]", "").replace("* [ ]", "").replace("+ [ ]", "").replace("[ ]", "").strip()
+                            if txt:
+                                task_items.append({"text": txt, "completed": False, "board_name": b_name, "board_id": b_id, "node_id": item.get("id"), "attention": attn})
+                        elif l.startswith("- [x]") or l.startswith("- [X]") or l.startswith("* [x]") or l.startswith("* [X]") or l.startswith("+ [x]") or l.startswith("+ [X]") or l.startswith("[x]") or l.startswith("[X]"):
+                            task_total += 1
+                            task_completed += 1
+                            txt = l.replace("- [x]", "").replace("- [X]", "").replace("* [x]", "").replace("* [X]", "").replace("+ [x]", "").replace("+ [X]", "").replace("[x]", "").replace("[X]", "").strip()
+                            if txt:
+                                task_items.append({"text": txt, "completed": True, "board_name": b_name, "board_id": b_id, "node_id": item.get("id"), "attention": attn})
+
+        return {
+            "boards": board_summaries,
+            "pinned_nodes": pinned_nodes,
+            "all_tags": sorted(list(all_tags)),
+            "task_stats": {
+                "total": task_total,
+                "completed": task_completed,
+                "pending": task_total - task_completed,
+                "items": task_items,
+            },
+            "total_nodes": total_nodes,
+        }
+
+    def get_pinned_order(self) -> list:
+        config_path = self.get_boards_dir(None) / "home_config.json"
+        if not config_path.exists():
+            return []
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("pinned_order", [])
+        except Exception:
+            return []
+
+    def save_pinned_order(self, order_list: list) -> bool:
+        config_path = self.get_boards_dir(None) / "home_config.json"
+        try:
+            data = {}
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data["pinned_order"] = order_list
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def toggle_task_completion(self, project, board_id_or_name: str, node_id: str, task_text: str, target_completed: bool) -> bool:
+        """Toggle checklist task completion in original note node payload without duplicating task data."""
+        board_data = self.load_board(project, board_id_or_name)
+        items = board_data.get("items", [])
+        modified = False
+
+        for item in items:
+            if isinstance(item, dict) and item.get("id") == node_id:
+                payload = item.get("payload", {})
+                content = payload.get("content", "")
+                if not content or not isinstance(content, str):
+                    continue
+
+                lines = content.splitlines()
+                new_lines = []
+                for line in lines:
+                    stripped = line.strip()
+                    if task_text in stripped:
+                        if target_completed and (stripped.startswith("- [ ]") or stripped.startswith("* [ ]") or stripped.startswith("+ [ ]") or stripped.startswith("[ ]")):
+                            line = line.replace("[ ]", "[x]")
+                            modified = True
+                        elif not target_completed and (stripped.startswith("- [x]") or stripped.startswith("- [X]") or stripped.startswith("* [x]") or stripped.startswith("* [X]") or stripped.startswith("+ [x]") or stripped.startswith("+ [X]") or stripped.startswith("[x]") or stripped.startswith("[X]")):
+                            line = line.replace("[x]", "[ ]").replace("[X]", "[ ]")
+                            modified = True
+                    new_lines.append(line)
+
+                if modified:
+                    payload["content"] = "\n".join(new_lines)
+                    item["payload"] = payload
+                    break
+
+        if modified:
+            self.save_board(project, board_data, board_id_or_name)
+            entry = self.get_board_entry(project, board_id_or_name)
+            target_id = entry["id"] if entry else board_id_or_name
+            self.board_updated.emit(project, target_id)
+            return True
+
+        return False
+
+    def add_quick_capture_note(self, text: str) -> dict:
+        """Quick Capture: add a note node to active Workbench board without requiring a project."""
+        txt = text.strip()
+        if not txt:
+            return None
+
+        active_id = self.get_active_board_id(None) or "Main"
+        board_data = self.load_board(None, active_id)
+        items = board_data.get("items", [])
+
+        # Collect existing note coordinates to prevent overlapping
+        existing_coords = set()
+        for item in items:
+            if isinstance(item, dict):
+                tr = item.get("transform", {})
+                if "x" in tr and "y" in tr:
+                    existing_coords.add((round(float(tr["x"])), round(float(tr["y"]))))
+
+        # Calculate a non-overlapping staggered position
+        base_x, base_y = 50, 50
+        stagger_x, stagger_y = base_x, base_y
+        idx = 0
+        while (round(float(stagger_x)), round(float(stagger_y))) in existing_coords:
+            idx += 1
+            stagger_x = base_x + (idx % 4) * 260 + (idx // 4) * 30
+            stagger_y = base_y + (idx // 4) * 160 + (idx % 4) * 30
+
+        note_id = str(uuid.uuid4())
+        title_line = txt.splitlines()[0][:40] if txt else "Quick Note"
+
+        new_item = {
+            "id": note_id,
+            "type": "note.blank",
+            "transform": {"x": stagger_x, "y": stagger_y, "width": 240, "height": 140},
+            "tags": ["quick_capture"],
+            "is_pinned": True,
+            "payload": {
+                "title": title_line,
+                "content": txt,
+            },
+            "created": datetime.now().isoformat(),
+        }
+
+        items.append(new_item)
+        board_data["items"] = items
+        self.save_board(None, board_data, active_id)
+        self.board_updated.emit(None, active_id)
+        return new_item
+
+
 

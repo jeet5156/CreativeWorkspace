@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QTextEdit,
     QComboBox,
+    QCheckBox,
     QPushButton,
     QFileDialog,
     QVBoxLayout,
@@ -263,6 +264,7 @@ class InspectorPanel(QWidget):
             project,
             project_service=proj_service,
             client_service=getattr(self._context, "client_service", None) if self._context else None,
+            lab_service=getattr(self._context, "lab_service", None) if self._context else None,
             on_updated_callback=self._on_project_updated,
         )
         self.inspect(inspectable)
@@ -301,18 +303,32 @@ class InspectorPanel(QWidget):
             lbl.setStyleSheet("color: #CBD5E1;")
             return lbl
 
-        elif field.field_type == "select":
+        elif field.field_type in ("select", "enum"):
             cb = QComboBox()
             if field.options:
-                cb.addItems(field.options)
+                cb.addItems([str(opt) for opt in field.options])
             if field.value:
-                idx = cb.findText(str(field.value), Qt.MatchFixedString)
+                val_str = str(field.value)
+                idx = cb.findText(val_str, Qt.MatchFixedString)
+                if idx < 0:
+                    for i in range(cb.count()):
+                        if cb.itemText(i).lower() == val_str.lower():
+                            idx = i
+                            break
                 if idx >= 0:
                     cb.setCurrentIndex(idx)
             cb.currentTextChanged.connect(
                 lambda text, key=field.key: self._on_property_changed(inspectable, key, text)
             )
             return cb
+
+        elif field.field_type == "boolean":
+            chk = QCheckBox()
+            chk.setChecked(bool(field.value))
+            chk.stateChanged.connect(
+                lambda state, key=field.key: self._on_property_changed(inspectable, key, bool(state == Qt.Checked or state == 2))
+            )
+            return chk
 
         elif field.field_type == "text":
             te = QTextEdit()

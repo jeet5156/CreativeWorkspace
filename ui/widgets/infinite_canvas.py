@@ -202,6 +202,8 @@ class InfiniteCanvas(QGraphicsView):
         self.viewport().update()
         self._emit_camera_changed()
 
+
+
     def zoom_in(self):
         self._apply_zoom(self.ZOOM_STEP)
 
@@ -242,15 +244,24 @@ class InfiniteCanvas(QGraphicsView):
             self._apply_zoom(1.0 / self.ZOOM_STEP)
         event.accept()
 
-    def focus_node(self, node, padding: float = 50.0):
+    def focus_node(self, node, padding: float = 50.0) -> bool:
         """Center and fit view on node bounding rect using fitInView."""
         if not node:
-            return
-        rect = node.sceneBoundingRect().adjusted(-padding, -padding, padding, padding)
+            return False
+        if isinstance(node, str):
+            node_item = self._items_map.get(node)
+        else:
+            node_item = node
+        if not node_item:
+            return False
+        self.clear_selection()
+        node_item.setSelected(True)
+        rect = node_item.sceneBoundingRect().adjusted(-padding, -padding, padding, padding)
         self.fitInView(rect, Qt.KeepAspectRatio)
         self._zoom_level = self.transform().m11()
         self.viewport().update()
         self._emit_camera_changed()
+        return True
 
     center_on_node = focus_node
     zoom_to_rect = focus_node

@@ -39,9 +39,16 @@ class ProjectsDashboard(QWidget):
     def refresh(self):
         try:
             projects = self.context.project_service.all_projects()
+            def get_sort_key(p):
+                is_fav = 1 if getattr(p, 'is_pinned', False) else 0
+                lo = getattr(p, 'last_opened', None)
+                cr = getattr(p, 'created', None)
+                return (is_fav, lo or cr or datetime.min)
+            sorted_projects = sorted(projects, key=get_sort_key, reverse=True)
             self.stats_label.setText(f"Total projects: {len(projects)}")
             self.recent_list.clear()
-            for p in projects[:10]:
-                self.recent_list.addItem(p.name)
+            for p in sorted_projects[:10]:
+                prefix = "★ " if getattr(p, "is_pinned", False) else ""
+                self.recent_list.addItem(f"{prefix}{p.name}")
         except Exception:
             pass

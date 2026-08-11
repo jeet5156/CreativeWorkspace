@@ -3,8 +3,11 @@ from PySide6.QtWidgets import (
     QWidget,
     QLabel,
     QTextEdit,
+    QPushButton,
+    QProgressBar,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QFormLayout,
     QFrame,
     QScrollArea,
@@ -32,6 +35,7 @@ class DashboardPanel(QWidget):
     """Inspiring Project Overview Home ('What is happening in this project?')."""
 
     project_reveal = Signal(object)
+    open_lab_requested = Signal(object, str)
 
     def __init__(self):
         super().__init__()
@@ -76,6 +80,25 @@ class DashboardPanel(QWidget):
         self.status_badge = QLabel("Active")
         self.status_badge.setStyleSheet("font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 4px; background-color: #14382B; color: #34D399;")
         top_row.addWidget(self.status_badge)
+
+        self.open_lab_btn = QPushButton("🎨 Open Creative Lab")
+        self.open_lab_btn.setCursor(Qt.PointingHandCursor)
+        self.open_lab_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ACCENT};
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 6px 14px;
+                border-radius: 6px;
+                border: none;
+            }}
+            QPushButton:hover {{
+                background-color: #3B82F6;
+            }}
+        """)
+        self.open_lab_btn.clicked.connect(self._on_open_lab_clicked)
+        top_row.addWidget(self.open_lab_btn)
 
         hero_layout.addLayout(top_row)
 
@@ -136,7 +159,7 @@ class DashboardPanel(QWidget):
 
         cols.addWidget(left_box, stretch=3)
 
-        # Right Column: Large Cover Artwork (No title label above it)
+        # Right Column: Large Cover Artwork
         right_box = QFrame()
         right_box.setStyleSheet(f"""
             QFrame {{
@@ -189,7 +212,96 @@ class DashboardPanel(QWidget):
         layout.addLayout(health_container)
 
         # ---------------------------------------------------------------------
-        # Section 4: Recent Activity & Milestones (Full Width Sections)
+        # Section 4: Project Lab Boards (Live Board Gallery)
+        # ---------------------------------------------------------------------
+        boards_container = QVBoxLayout()
+        boards_container.setSpacing(12)
+
+        boards_header = QLabel("PROJECT LAB BOARDS")
+        boards_header.setStyleSheet(f"color: {ACCENT}; font-size: 11px; font-weight: bold; letter-spacing: 0.5px;")
+        boards_container.addWidget(boards_header)
+
+        self.boards_grid_widget = QWidget()
+        self.boards_grid = QGridLayout(self.boards_grid_widget)
+        self.boards_grid.setContentsMargins(0, 0, 0, 0)
+        self.boards_grid.setSpacing(12)
+        boards_container.addWidget(self.boards_grid_widget)
+
+        layout.addLayout(boards_container)
+
+        # ---------------------------------------------------------------------
+        # Section 5: Pinned References & Pinned Notes
+        # ---------------------------------------------------------------------
+        pinned_container = QVBoxLayout()
+        pinned_container.setSpacing(12)
+
+        pinned_header = QLabel("PINNED REFERENCES & FAVORITES")
+        pinned_header.setStyleSheet(f"color: {ACCENT}; font-size: 11px; font-weight: bold; letter-spacing: 0.5px;")
+        pinned_container.addWidget(pinned_header)
+
+        self.pinned_grid_widget = QWidget()
+        self.pinned_grid = QGridLayout(self.pinned_grid_widget)
+        self.pinned_grid.setContentsMargins(0, 0, 0, 0)
+        self.pinned_grid.setSpacing(12)
+        pinned_container.addWidget(self.pinned_grid_widget)
+
+        layout.addLayout(pinned_container)
+
+        # ---------------------------------------------------------------------
+        # Section 6: Project Tasks & Checklists
+        # ---------------------------------------------------------------------
+        tasks_box = QFrame()
+        tasks_box.setStyleSheet(f"""
+            QFrame {{
+                background-color: {CARD_BG};
+                border: 1px solid {BORDER_COLOR};
+                border-radius: 8px;
+                padding: 16px;
+            }}
+            QLabel#section_title {{
+                color: {ACCENT};
+                font-size: 11px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
+            }}
+        """)
+        tasks_layout = QVBoxLayout(tasks_box)
+        tasks_layout.setSpacing(12)
+
+        tasks_title = QLabel("PROJECT TASKS & CHECKLISTS")
+        tasks_title.setObjectName("section_title")
+        tasks_layout.addWidget(tasks_title)
+
+        self.task_summary_lbl = QLabel("No tasks active")
+        self.task_summary_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: bold;")
+        tasks_layout.addWidget(self.task_summary_lbl)
+
+        self.task_progress_bar = QProgressBar()
+        self.task_progress_bar.setFixedHeight(8)
+        self.task_progress_bar.setTextVisible(False)
+        self.task_progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                background-color: #1E293B;
+                border: none;
+                border-radius: 4px;
+            }}
+            QProgressBar::chunk {{
+                background-color: #3B82F6;
+                border-radius: 4px;
+            }}
+        """)
+        tasks_layout.addWidget(self.task_progress_bar)
+
+        self.task_list_widget = QWidget()
+        self.task_list_layout = QVBoxLayout(self.task_list_widget)
+        self.task_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.task_list_layout.setSpacing(6)
+        tasks_layout.addWidget(self.task_list_widget)
+
+        layout.addWidget(tasks_box)
+
+        # ---------------------------------------------------------------------
+        # Section 7: Recent Activity & Milestones
         # ---------------------------------------------------------------------
         activity_box = QFrame()
         activity_box.setStyleSheet(f"""
@@ -217,9 +329,9 @@ class DashboardPanel(QWidget):
         recent_act_title.setObjectName("section_title")
         act_layout.addWidget(recent_act_title)
 
-        recent_act = QLabel("⚡ No recent events logged")
-        recent_act.setObjectName("placeholder_text")
-        act_layout.addWidget(recent_act)
+        self.recent_act = QLabel("⚡ No recent events logged")
+        self.recent_act.setObjectName("placeholder_text")
+        act_layout.addWidget(self.recent_act)
 
         milestones_title = QLabel("MILESTONES & TIMELINE")
         milestones_title.setObjectName("section_title")
@@ -277,6 +389,30 @@ class DashboardPanel(QWidget):
             pass
         try:
             context.project_service.project_updated.connect(self._on_project_updated)
+        except Exception:
+            pass
+        try:
+            if hasattr(context, "lab_service") and context.lab_service:
+                context.lab_service.board_updated.connect(self._on_board_updated)
+                context.lab_service.manifest_updated.connect(self._on_manifest_updated)
+        except Exception:
+            pass
+
+    def _on_board_updated(self, project, board_id):
+        if not self._current_project or not project:
+            return
+        try:
+            if str(getattr(project, "location", "")) == str(getattr(self._current_project, "location", "")):
+                self._update_lab_summary(self._current_project)
+        except Exception:
+            pass
+
+    def _on_manifest_updated(self, project):
+        if not self._current_project or not project:
+            return
+        try:
+            if str(getattr(project, "location", "")) == str(getattr(self._current_project, "location", "")):
+                self._update_lab_summary(self._current_project)
         except Exception:
             pass
 
@@ -348,6 +484,181 @@ class DashboardPanel(QWidget):
             self.snapshot.clear()
 
         self._update_status_indicators(project)
+        self._update_lab_summary(project)
+
+    def _on_open_lab_clicked(self):
+        if self._context and hasattr(self._context, "workspace_manager") and self._context.workspace_manager:
+            if self._current_project:
+                self._context.workspace_manager.lab_panel.show_project(self._current_project)
+            self._context.workspace_manager.show_module("lab")
+
+    def _on_launch_board_clicked(self, board_name: str):
+        if self._context and hasattr(self._context, "workspace_manager") and self._context.workspace_manager:
+            if self._current_project:
+                self._context.workspace_manager.lab_panel.show_project(self._current_project, board_name=board_name)
+            self._context.workspace_manager.show_module("lab")
+
+    def _update_lab_summary(self, project):
+        if not self._context or not hasattr(self._context, "lab_service") or not self._context.lab_service or not project:
+            return
+
+        try:
+            summary = self._context.lab_service.get_project_summary_metadata(project)
+        except Exception:
+            return
+
+        # 1. Update Board Gallery Grid
+        while self.boards_grid.count():
+            item = self.boards_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        boards = summary.get("boards", [])
+        if not boards:
+            lbl = QLabel("No boards created yet")
+            lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+            self.boards_grid.addWidget(lbl, 0, 0)
+        else:
+            for idx, b in enumerate(boards):
+                col = idx % 3
+                row = idx // 3
+
+                card = QFrame()
+                card.setStyleSheet(f"""
+                    QFrame {{
+                        background-color: {CARD_BG};
+                        border: 1px solid {BORDER_COLOR};
+                        border-radius: 8px;
+                        padding: 12px;
+                    }}
+                    QFrame:hover {{
+                        border-color: {ACCENT};
+                    }}
+                """)
+                c_layout = QVBoxLayout(card)
+                c_layout.setSpacing(6)
+
+                b_name = b.get("name", "Board")
+                title_lbl = QLabel(f"🎨 {b_name}")
+                title_lbl.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {TEXT_PRIMARY};")
+                c_layout.addWidget(title_lbl)
+
+                cnt = b.get("item_count", 0)
+                sub_lbl = QLabel(f"{cnt} spatial nodes")
+                sub_lbl.setStyleSheet(f"font-size: 11px; color: {TEXT_MUTED};")
+                c_layout.addWidget(sub_lbl)
+
+                launch_btn = QPushButton("Launch Board →")
+                launch_btn.setCursor(Qt.PointingHandCursor)
+                launch_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: #1E293B;
+                        color: {ACCENT};
+                        border: 1px solid {BORDER_COLOR};
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {ACCENT};
+                        color: #FFFFFF;
+                    }}
+                """)
+                launch_btn.clicked.connect(lambda _, name=b_name: self._on_launch_board_clicked(name))
+                c_layout.addWidget(launch_btn)
+
+                self.boards_grid.addWidget(card, row, col)
+
+        # 2. Update Pinned Grid
+        while self.pinned_grid.count():
+            item = self.pinned_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        pinned = summary.get("pinned_nodes", [])
+        if not pinned:
+            lbl = QLabel("📌 No pinned reference items on canvas yet")
+            lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+            self.pinned_grid.addWidget(lbl, 0, 0)
+        else:
+            for idx, item_data in enumerate(pinned[:6]):
+                col = idx % 3
+                row = idx // 3
+
+                p_card = QFrame()
+                p_card.setStyleSheet(f"""
+                    QFrame {{
+                        background-color: {CARD_BG};
+                        border: 1px solid {BORDER_COLOR};
+                        border-radius: 8px;
+                        padding: 10px;
+                    }}
+                """)
+                p_layout = QVBoxLayout(p_card)
+                p_layout.setSpacing(4)
+
+                t_id = item_data.get("type", "node")
+                b_name = item_data.get("_board_name", "Main")
+
+                p_title = item_data.get("payload", {}).get("title") or item_data.get("payload", {}).get("filename") or t_id
+                title_lbl = QLabel(f"📌 {p_title}")
+                title_lbl.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {TEXT_PRIMARY};")
+                p_layout.addWidget(title_lbl)
+
+                board_badge = QLabel(f"Board: {b_name}")
+                board_badge.setStyleSheet(f"font-size: 10px; color: {TEXT_MUTED};")
+                p_layout.addWidget(board_badge)
+
+                self.pinned_grid.addWidget(p_card, row, col)
+
+        # 3. Update Tasks & Checklists
+        task_stats = summary.get("task_stats", {})
+        total = task_stats.get("total", 0)
+        completed = task_stats.get("completed", 0)
+        pending = task_stats.get("pending", 0)
+        task_items = task_stats.get("items", [])
+
+        if total > 0:
+            pct = int((completed / total) * 100)
+            self.task_summary_lbl.setText(f"{completed} / {total} Tasks Completed ({pct}%)")
+            self.task_progress_bar.setValue(pct)
+            self.task_progress_bar.setVisible(True)
+        else:
+            self.task_summary_lbl.setText("No active checklist tasks in notes")
+            self.task_progress_bar.setValue(0)
+            self.task_progress_bar.setVisible(False)
+
+        while self.task_list_layout.count():
+            item = self.task_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not task_items:
+            lbl = QLabel("Create note nodes with '- [ ] Task' to track production checklists.")
+            lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+            self.task_list_layout.addWidget(lbl)
+        else:
+            for t_item in task_items[:8]:
+                t_row = QHBoxLayout()
+                t_row.setSpacing(8)
+
+                chk = QLabel("☑" if t_item["completed"] else "☐")
+                chk.setStyleSheet(f"color: {'#34D399' if t_item['completed'] else TEXT_MUTED}; font-size: 12px;")
+                t_row.addWidget(chk)
+
+                txt_lbl = QLabel(t_item["text"])
+                txt_lbl.setStyleSheet(f"color: {TEXT_PRIMARY if not t_item['completed'] else TEXT_MUTED}; font-size: 12px;")
+                t_row.addWidget(txt_lbl)
+
+                t_row.addStretch()
+                b_lbl = QLabel(f"[{t_item['board_name']}]")
+                b_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px;")
+                t_row.addWidget(b_lbl)
+
+                t_widget = QWidget()
+                t_widget.setLayout(t_row)
+                self.task_list_layout.addWidget(t_widget)
 
     def _update_status_indicators(self, project):
         if not self._context or not project:
@@ -378,4 +689,5 @@ class DashboardPanel(QWidget):
         render_for("assets", self.assets_status_indicator, self.assets_status_label)
         render_for("references", self.references_status_indicator, self.references_status_label)
         render_for("exports", self.exports_status_indicator, self.exports_status_label)
+
 

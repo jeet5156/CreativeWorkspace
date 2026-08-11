@@ -93,8 +93,9 @@ class ExplorerPanel(QWidget):
         self.projects_root.setExpanded(True)
 
         # Other app modules
-        self.lab_root = QTreeWidgetItem(["🧪 Lab"])
-        self.lab_root.setData(0, Qt.UserRole + 1, "lab")
+        self.lab_root = QTreeWidgetItem(["🛠️ Workbench"])
+        self.lab_root.setData(0, Qt.UserRole + 1, "workbench")
+        self.lab_root.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
         self.tree.addTopLevelItem(self.lab_root)
 
         self.clients_root = QTreeWidgetItem(["👥 Clients"])
@@ -152,8 +153,86 @@ class ExplorerPanel(QWidget):
                     except Exception:
                         pass
                 self._reload_clients_from_context()
+            if context and getattr(context, 'lab_service', None):
+                if not getattr(self, '_lab_signals_connected', False):
+                    try:
+                        context.lab_service.board_updated.connect(self._on_board_manifest_updated)
+                        context.lab_service.manifest_updated.connect(self._on_board_manifest_updated)
+                        self._lab_signals_connected = True
+                    except Exception:
+                        pass
         except Exception:
             self._context = None
+
+    def _on_board_manifest_updated(self, project, board_id=None):
+        try:
+            self.refresh_lab_node(project)
+        except Exception:
+            pass
+
+    def refresh_lab_node(self, project):
+        """Refresh children of Workbench root (project=None) or a Project's Lab Boards node."""
+        if not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+
+        lab_svc = self._context.lab_service
+        current_selected_item = self.tree.currentItem()
+        selected_board_id = current_selected_item.data(0, Qt.UserRole + 20) if current_selected_item and current_selected_item.data(0, ROLE_NODE_TYPE) == "board" else None
+        selected_project = current_selected_item.data(0, ROLE_PROJECT) if current_selected_item else None
+
+        target_node = None
+        if not project:
+            target_node = getattr(self, "lab_root", None)
+        elif hasattr(self, "_project_items") and project and getattr(project, "location", None):
+            loc_str = str(project.location)
+            p_item = self._project_items.get(loc_str)
+            if p_item:
+                for i in range(p_item.childCount()):
+                    c = p_item.child(i)
+                    if c.data(0, ROLE_SECTION) == "lab":
+                        target_node = c
+                        break
+
+        if not target_node:
+            return
+
+        # Fetch fresh boards list from LabService strictly enforcing contract
+        boards = lab_svc.list_boards(project)
+
+        # Block tree signals during update to prevent unintended click events
+        was_blocked = self.tree.signalsBlocked()
+        self.tree.blockSignals(True)
+        try:
+            target_node.takeChildren()
+            new_selected_item = None
+
+            for b in boards:
+                b_name = b.get("name", "Board")
+                b_id = b.get("id")
+                child = QTreeWidgetItem([f"🎨 {b_name}"])
+                child.setData(0, ROLE_PROJECT, project)
+                child.setData(0, ROLE_SECTION, "lab")
+                child.setData(0, ROLE_REL_PATH, b_name)
+                child.setData(0, Qt.UserRole + 20, b_id)
+                child.setData(0, ROLE_NODE_TYPE, "board")
+                child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+                target_node.addChild(child)
+
+                if selected_board_id and b_id == selected_board_id and (
+                    (selected_project is None and project is None) or 
+                    (selected_project and project and str(getattr(selected_project, 'location', '')) == str(getattr(project, 'location', '')))
+                ):
+                    new_selected_item = child
+
+            if boards:
+                target_node.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+            else:
+                target_node.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+
+            if new_selected_item:
+                self.tree.setCurrentItem(new_selected_item)
+        finally:
+            self.tree.blockSignals(was_blocked)
 
     def _reload_clients_from_context(self):
         if getattr(self, '_context', None) and getattr(self._context, 'client_service', None):
@@ -202,6 +281,7 @@ class ExplorerPanel(QWidget):
             pass
 
         sections = [
+            ("🧪 Lab Boards", "lab"),
             ("📝 Notes", "notes"),
             ("🖼 References", "references"),
             ("📦 Assets", "assets"),
@@ -221,18 +301,20 @@ class ExplorerPanel(QWidget):
             child.setData(0, ROLE_REL_PATH, top_folder)
             child.setData(0, ROLE_NODE_TYPE, "category")
             
-            # Show expansion indicator if folder service confirms subfolders exist
-            has_subfolders = False
-            if folder_service:
-                try:
-                    has_subfolders = bool(folder_service.list_subfolders(project, top_folder))
-                except Exception:
-                    has_subfolders = False
-            
-            if has_subfolders:
+            if section == "lab":
                 child.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
             else:
-                child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+                has_subfolders = False
+                if folder_service:
+                    try:
+                        has_subfolders = bool(folder_service.list_subfolders(project, top_folder))
+                    except Exception:
+                        has_subfolders = False
+                
+                if has_subfolders:
+                    child.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                else:
+                    child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
             
             project_item.addChild(child)
 
@@ -283,8 +365,26 @@ class ExplorerPanel(QWidget):
                 pass
             return
 
+        node_type = item.data(0, ROLE_NODE_TYPE)
+        if node_type == "board":
+            project = item.data(0, ROLE_PROJECT)
+            board_name = item.data(0, ROLE_REL_PATH)
+            board_id = item.data(0, Qt.UserRole + 20)
+            if getattr(self, "_context", None) and getattr(self._context, "workspace_manager", None):
+                wm = self._context.workspace_manager
+                if project:
+                    wm.show_project(project, section="lab")
+                    if hasattr(wm, "lab_panel") and wm.lab_panel:
+                        wm.lab_panel.show_project(project, board_id=board_id, board_name=board_name)
+                else:
+                    wm.show_workbench()
+                    if hasattr(wm, "lab_panel") and wm.lab_panel:
+                        wm.lab_panel.show_project(None, board_id=board_id, board_name=board_name)
+                wm.show_module("lab")
+            return
+
         mod_key = item.data(0, Qt.UserRole + 1)
-        if mod_key in ("home", "projects", "lab", "clients", "assets_lib", "knowledge", "business"):
+        if mod_key in ("home", "projects", "lab", "workbench", "clients", "assets_lib", "knowledge", "business"):
             try:
                 self.navigation_requested.emit(mod_key)
             except Exception:
@@ -305,7 +405,7 @@ class ExplorerPanel(QWidget):
         self._on_item_expanded(item)
 
     def _on_item_expanded(self, item: QTreeWidgetItem):
-        """Lazy load subfolders on category/folder expansion, and expand metadata on project header."""
+        """Lazy load subfolders/boards on category expansion, and expand metadata on project header."""
         node_type = item.data(0, ROLE_NODE_TYPE)
         if node_type == "project":
             # Collapse only other top-level project nodes
@@ -326,12 +426,57 @@ class ExplorerPanel(QWidget):
                     pass
             return
 
+        project = item.data(0, ROLE_PROJECT)
+        mod_key = item.data(0, Qt.UserRole + 1)
+        if (mod_key == "workbench" or item == getattr(self, "lab_root", None)) and not project:
+            lab_svc = getattr(self._context, "lab_service", None) if getattr(self, "_context", None) else None
+            if lab_svc:
+                boards = lab_svc.list_boards(None)
+                item.takeChildren()
+                for b in boards:
+                    b_name = b.get("name", "Board")
+                    b_id = b.get("id")
+                    child = QTreeWidgetItem([f"🎨 {b_name}"])
+                    child.setData(0, ROLE_PROJECT, None)
+                    child.setData(0, ROLE_SECTION, "lab")
+                    child.setData(0, ROLE_REL_PATH, b_name)
+                    child.setData(0, Qt.UserRole + 20, b_id)
+                    child.setData(0, ROLE_NODE_TYPE, "board")
+                    child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+                    item.addChild(child)
+                if boards:
+                    item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+            return
+
+        section = item.data(0, ROLE_SECTION)
+        project = item.data(0, ROLE_PROJECT)
+
+        if section == "lab" and project:
+            lab_svc = getattr(self._context, "lab_service", None) if getattr(self, "_context", None) else None
+            if lab_svc:
+                boards = lab_svc.list_boards(project)
+                item.takeChildren()
+                for b in boards:
+                    b_name = b.get("name", "Board")
+                    b_id = b.get("id")
+                    child = QTreeWidgetItem([f"🎨 {b_name}"])
+                    child.setData(0, ROLE_PROJECT, project)
+                    child.setData(0, ROLE_SECTION, "lab")
+                    child.setData(0, ROLE_REL_PATH, b_name)
+                    child.setData(0, Qt.UserRole + 20, b_id)
+                    child.setData(0, ROLE_NODE_TYPE, "board")
+                    child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+                    item.addChild(child)
+                if boards:
+                    item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                else:
+                    item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+            return
+
         if node_type not in ("category", "folder"):
             return
 
-        project = item.data(0, ROLE_PROJECT)
         rel_path = item.data(0, ROLE_REL_PATH)
-        section = item.data(0, ROLE_SECTION)
 
         if not project or not rel_path:
             return

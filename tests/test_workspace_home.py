@@ -88,7 +88,8 @@ class TestWorkspaceHome(unittest.TestCase):
         panel.set_context(context)
 
         self.assertEqual(panel.recent_grid.count(), 2)
-        self.assertEqual(panel.pinned_grid.count(), 1)
+        first_card = panel.recent_grid.itemAt(0).widget()
+        self.assertEqual(first_card.project.name, "Beta")
 
 
 if __name__ == "__main__":

@@ -7,10 +7,11 @@ from core.inspectable import InspectableObject, InspectableSection, InspectableF
 class ProjectInspectable(InspectableObject):
     """Adapter wrapping Project model into the InspectableObject contract."""
 
-    def __init__(self, project, project_service=None, client_service=None, on_updated_callback=None):
+    def __init__(self, project, project_service=None, client_service=None, lab_service=None, on_updated_callback=None):
         self.project = project
         self.project_service = project_service
         self.client_service = client_service
+        self.lab_service = lab_service
         self.on_updated_callback = on_updated_callback
 
     def get_display_name(self) -> str:
@@ -49,6 +50,7 @@ class ProjectInspectable(InspectableObject):
                 value=str(getattr(p, "status", "active")).capitalize(),
                 options=["Active", "In Progress", "On Hold", "Archived"],
             ),
+            InspectableField("is_pinned", "Favourite Project", "boolean", value=bool(getattr(p, "is_pinned", False))),
             InspectableField("description", "Description", "text", value=getattr(p, "description", "")),
         ]
 
@@ -72,14 +74,35 @@ class ProjectInspectable(InspectableObject):
             InspectableField("deadline", "Deadline", "string", value=getattr(p, "deadline", "")),
         ]
 
-        # Section 3: Appearance
+        # Section 3: Creative Lab Summary (Live Derived Metrics)
+        sections = [
+            InspectableSection("General", general_fields),
+            InspectableSection("Organization", org_fields),
+        ]
+
+        if self.lab_service:
+            try:
+                summary = self.lab_service.get_project_summary_metadata(p)
+                t_stats = summary.get("task_stats", {})
+                lab_fields = [
+                    InspectableField("boards_count", "Boards", "readonly", value=str(len(summary.get("boards", [])))),
+                    InspectableField("nodes_count", "Spatial Nodes", "readonly", value=str(summary.get("total_nodes", 0))),
+                    InspectableField("pinned_count", "Pinned References", "readonly", value=str(len(summary.get("pinned_nodes", [])))),
+                    InspectableField("tasks_count", "Checklist Tasks", "readonly", value=f"{t_stats.get('completed', 0)} / {t_stats.get('total', 0)} Completed"),
+                ]
+                sections.append(InspectableSection("Creative Lab Summary", lab_fields))
+            except Exception:
+                pass
+
+        # Section 4: Appearance
         snapshot_path = str(Path(p.location) / "snapshot.png") if getattr(p, "location", None) else ""
         appearance_fields = [
             InspectableField("snapshot", "Cover Image", "image", value=snapshot_path),
             InspectableField("cover_actions", "Cover Actions", "cover_actions", value=snapshot_path),
         ]
+        sections.append(InspectableSection("Appearance", appearance_fields))
 
-        # Section 4: Metadata (Read-Only)
+        # Section 5: Metadata (Read-Only)
         created_str = p.created.strftime("%d %b %Y %H:%M") if getattr(p, "created", None) else "—"
         modified_str = p.modified.strftime("%d %b %Y %H:%M") if getattr(p, "modified", None) else created_str
         proj_id = Path(p.location).name if getattr(p, "location", None) else "—"
@@ -89,13 +112,9 @@ class ProjectInspectable(InspectableObject):
             InspectableField("location", "Location Path", "readonly", value=str(getattr(p, "location", "—"))),
             InspectableField("id", "Project ID", "readonly", value=proj_id),
         ]
+        sections.append(InspectableSection("Metadata", metadata_fields))
 
-        return [
-            InspectableSection("General", general_fields),
-            InspectableSection("Organization", org_fields),
-            InspectableSection("Appearance", appearance_fields),
-            InspectableSection("Metadata", metadata_fields),
-        ]
+        return sections
 
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
         if not self.project:
@@ -115,6 +134,9 @@ class ProjectInspectable(InspectableObject):
             updated = True
         elif field_key == "status":
             self.project.status = val_str.lower()
+            updated = True
+        elif field_key in ("is_pinned", "is_favorite", "favorite"):
+            self.project.is_pinned = bool(value)
             updated = True
         elif field_key == "description":
             self.project.description = str(value)
@@ -279,6 +301,10 @@ class NodeInspectable(InspectableObject):
                 if f_node and hasattr(f_node, "payload"):
                     frame_title = str(f_node.payload.get("title", "Frame"))
 
+        attn_val = str(node.payload.get("attention") or (node_meta.get("attention") if isinstance(node_meta, dict) else "normal")).lower()
+        if attn_val not in ("normal", "important", "urgent"):
+            attn_val = "normal"
+
         stat_fields = [
             InspectableField("summary_total", "Knowledge Relationships", "readonly", value=str(total_rels)),
             InspectableField("summary_incoming", "Incoming (Backlinks)", "readonly", value=str(len(incoming_rels))),
@@ -286,6 +312,7 @@ class NodeInspectable(InspectableObject):
             InspectableField("summary_frame", "Frame Location", "readonly", value=frame_title),
             InspectableField("summary_tags", "Tags", "readonly", value=tags_str),
             InspectableField("is_pinned", "Pinned Node", "boolean", value=is_pinned),
+            InspectableField("attention", "Attention Priority", "enum", value=attn_val.capitalize(), options=["Normal", "Important", "Urgent"]),
         ]
         sections.append(InspectableSection("Knowledge Overview", stat_fields))
 
@@ -457,6 +484,18 @@ class NodeInspectable(InspectableObject):
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
         if not self.node_item:
             return False
+        if field_key in ("attention", "payload.attention"):
+            val_str = str(value or "normal").lower()
+            if val_str not in ("normal", "important", "urgent"):
+                val_str = "normal"
+            self.node_item.payload["attention"] = val_str
+            node_meta = getattr(self.node_item, "metadata", None)
+            if isinstance(node_meta, dict):
+                node_meta["attention"] = val_str
+            self.node_item.update()
+            if hasattr(self.node_item, "_emit_modified"):
+                self.node_item._emit_modified()
+            return True
         if field_key == "is_pinned":
             val = bool(value)
             self.node_item.payload["pinned"] = val

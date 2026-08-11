@@ -43,6 +43,19 @@ class WorkspaceManager:
             self.client_panel = ModulePlaceholder("Clients", "Manage client records, contacts, and deliverables.")
             self._register_module("clients", self.client_panel)
 
+        try:
+            if hasattr(self.workspace, "home") and self.workspace.home:
+                self.workspace.home.open_workbench_requested.connect(self.show_workbench)
+                self.workspace.home.open_board_requested.connect(
+                    lambda proj, b_name, nid=None: (
+                        self.show_project(proj, section="lab") if proj else self.show_workbench(),
+                        self.lab_panel.show_project(proj, board_name=b_name, target_node_id=nid) if self.lab_panel else None,
+                        self.show_module("lab")
+                    )
+                )
+        except Exception:
+            pass
+
         self._register_module(
             "assets_lib",
             ModulePlaceholder(
@@ -161,10 +174,24 @@ class WorkspaceManager:
             pass
 
 
+    def show_workbench(self):
+        """Navigate to global Workbench in LabPanel (project=None)."""
+        if getattr(self, "lab_panel", None):
+            try:
+                if self.context:
+                    self.context.set_current_project(None)
+                self.lab_panel.show_project(None)
+            except Exception:
+                pass
+            self.show_module("lab")
+
     def handle_navigation(self, key: str):
         if key == "home":
             self.show_home()
         elif key == "projects":
             self.show_module("projects_dashboard")
+        elif key in ("lab", "workbench"):
+            self.show_workbench()
         else:
             self.show_module(key)
+

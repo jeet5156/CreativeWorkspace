@@ -74,8 +74,28 @@ class LabPanel(QWidget):
         self.toggle_sidebar_btn.clicked.connect(self._toggle_sidebar)
         header_layout.addWidget(self.toggle_sidebar_btn)
 
-        title_label = QLabel("🧪 <b>Creative Lab</b>")
-        header_layout.addWidget(title_label)
+        self.project_nav_btn = QPushButton("📁 Overview")
+        self.project_nav_btn.setToolTip("Return to Project Overview Dashboard")
+        self.project_nav_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1E293B;
+                color: #60A5FA;
+                border: 1px solid #3B82F6;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3B82F6;
+                color: #FFFFFF;
+            }
+        """)
+        self.project_nav_btn.clicked.connect(self._on_project_nav_clicked)
+        header_layout.addWidget(self.project_nav_btn)
+
+        self.title_label = QLabel("🧪 <b>Creative Lab</b>")
+        header_layout.addWidget(self.title_label)
 
         self.board_label = QLabel("— Main Canvas")
         self.board_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
@@ -175,8 +195,8 @@ class LabPanel(QWidget):
 
         # Sidebar Header Row
         sb_header_layout = QHBoxLayout()
-        sb_title = QLabel("PROJECT BOARDS")
-        sb_header_layout.addWidget(sb_title)
+        self.sb_title_label = QLabel("PROJECT BOARDS")
+        sb_header_layout.addWidget(self.sb_title_label)
         sb_header_layout.addStretch()
 
         self.add_board_btn = QPushButton("➕ New")
@@ -262,15 +282,31 @@ class LabPanel(QWidget):
             self._save_timer.stop()
             self._persist_viewport()
 
-    def show_project(self, project, board_id: str = None, board_name: str = None):
-        if not project:
-            return
+    def _on_project_nav_clicked(self):
+        if self._context and hasattr(self._context, "workspace_manager") and self._context.workspace_manager:
+            if self._current_project:
+                self._context.workspace_manager.show_project(self._current_project, section="dashboard")
+            else:
+                self._context.workspace_manager.show_home()
 
+    def show_project(self, project, board_id: str = None, board_name: str = None, target_node_id: str = None):
         # 1. Flush pending saves for previous project & board BEFORE changing references
         self.flush_pending_saves()
 
         # 2. Update current project reference
         self._current_project = project
+        if hasattr(self, "project_nav_btn"):
+            if project:
+                self.project_nav_btn.setText(f"📁 {project.name}")
+            else:
+                self.project_nav_btn.setText("🏠 Home")
+
+        if hasattr(self, "title_label") and self.title_label:
+            if project:
+                self.title_label.setText("🧪 <b>Creative Lab</b>")
+            else:
+                self.title_label.setText("🛠️ <b>Workbench</b>")
+
         self._update_canvas_context()
 
         if not self._context or not getattr(self._context, "lab_service", None):
@@ -289,9 +325,12 @@ class LabPanel(QWidget):
 
         self._switch_to_board(target_board)
 
+        if target_node_id and hasattr(self, "canvas") and self.canvas:
+            self.canvas.focus_node(target_node_id)
+
     def _switch_to_board(self, board_id: str):
         """Single canonical board switching pipeline used across all navigation entry points."""
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
 
         lab_svc = self._context.lab_service
@@ -360,8 +399,14 @@ class LabPanel(QWidget):
             self._is_switching_board = False
 
     def _refresh_boards_sidebar(self):
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
+
+        if hasattr(self, "sb_title_label") and self.sb_title_label:
+            if self._current_project:
+                self.sb_title_label.setText("PROJECT BOARDS")
+            else:
+                self.sb_title_label.setText("WORKBENCH BOARDS")
 
         lab_svc = self._context.lab_service
         boards = lab_svc.list_boards(self._current_project)
@@ -392,7 +437,7 @@ class LabPanel(QWidget):
             self._switch_to_board(board_id)
 
     def _on_create_board_clicked(self):
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
 
         name, ok = QInputDialog.getText(self, "New Board", "Enter board name:", text="Untitled Board")
@@ -441,7 +486,7 @@ class LabPanel(QWidget):
         menu.exec_(self.boards_list.mapToGlobal(pos))
 
     def _on_rename_board_clicked(self, board_id: str, old_name: str):
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
         name, ok = QInputDialog.getText(self, "Rename Board", "Enter new board name:", text=old_name)
         if ok and name.strip():
@@ -453,7 +498,7 @@ class LabPanel(QWidget):
                 self._refresh_boards_sidebar()
 
     def _on_duplicate_board_clicked(self, board_id: str):
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
         lab_svc = self._context.lab_service
         new_entry = lab_svc.duplicate_board(self._current_project, board_id)
@@ -461,7 +506,7 @@ class LabPanel(QWidget):
             self._switch_to_board(new_entry["id"])
 
     def _on_delete_board_clicked(self, board_id: str, board_name: str):
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
         lab_svc = self._context.lab_service
         boards = lab_svc.list_boards(self._current_project)
@@ -469,7 +514,7 @@ class LabPanel(QWidget):
             QMessageBox.warning(
                 self,
                 "Cannot Delete Board",
-                "Cannot delete the final remaining board in a project."
+                "Cannot delete the final remaining board."
             )
             return
 
@@ -513,7 +558,7 @@ class LabPanel(QWidget):
         self.grid_btn.setText("Grid: On" if grid_on else "Grid: Off")
 
         # Schedule debounced auto-save
-        if self._current_project:
+        if self._context and getattr(self._context, "lab_service", None):
             self._save_timer.start()
 
     def _on_cursor_position_changed(self, x: float, y: float):
@@ -522,7 +567,7 @@ class LabPanel(QWidget):
     def _on_node_changed(self, data=None):
         if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
             return
-        if not self._current_project:
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
         self._item_save_timer.start()
 
@@ -558,7 +603,7 @@ class LabPanel(QWidget):
     def _persist_viewport(self):
         if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
             return
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
         try:
             viewport = self.canvas.get_viewport_state()
@@ -569,7 +614,7 @@ class LabPanel(QWidget):
     def _persist_items(self):
         if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):
             return
-        if not self._current_project or not self._context or not getattr(self._context, "lab_service", None):
+        if not self._context or not getattr(self._context, "lab_service", None):
             return
         try:
             items_data = [item.to_dict() for item in self.canvas._items_map.values()]
