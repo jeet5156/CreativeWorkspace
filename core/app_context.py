@@ -23,7 +23,7 @@ class AppContext:
         # Lab service (Lab board persistence)
         try:
             from services.lab_service import LabService
-            self.lab_service = LabService(self.project_service)
+            self.lab_service = LabService(self.project_service, activity_service=self.activity_service)
         except Exception:
             self.lab_service = None
 

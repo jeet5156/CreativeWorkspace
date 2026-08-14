@@ -479,6 +479,12 @@ class NodeInspectable(InspectableObject):
         fields.append(InspectableField("tags", "Tags (comma-separated)", "tags", value=tags_str if tags_str != "None" else ""))
         sections.append(InspectableSection("General Properties", fields))
 
+        action_fields = [
+            InspectableField("action_move_project", "Move to Project", "action", value="📁 Move to Project..."),
+            InspectableField("action_copy_project", "Copy to Project", "action", value="📋 Copy to Project..."),
+        ]
+        sections.append(InspectableSection("Actions", action_fields))
+
         return sections
 
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
@@ -577,7 +583,16 @@ class MultiNodeInspectable(InspectableObject):
             InspectableField("tags", "Tags (comma-separated)", "tags", value=common_tags_str),
         ]
 
-        return [InspectableSection("Selection Summary", fields)]
+        action_fields = [
+            InspectableField("action_move_project", "Move to Project", "action", value="📁 Move to Project..."),
+            InspectableField("action_copy_project", "Copy to Project", "action", value="📋 Copy to Project..."),
+        ]
+
+        return [
+            InspectableSection("Selection Summary", fields),
+            InspectableSection("Actions", action_fields),
+        ]
+
 
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
         if not self.nodes:

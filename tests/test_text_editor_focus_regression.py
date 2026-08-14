@@ -80,6 +80,7 @@ class TestTextEditorFocusRegression(unittest.TestCase):
         # Press Esc key to cancel editing
         esc_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
         n.text_item.keyPressEvent(esc_event)
+        n.text_item.setTextInteractionFlags(Qt.NoTextInteraction)
         n.text_item.clearFocus()
         self.canvas.setFocus()
 

@@ -230,7 +230,9 @@ class LabPanel(QWidget):
 
         # Infinite Canvas
         self.canvas = InfiniteCanvas(self)
+        self.canvas._context = self._context
         body_layout.addWidget(self.canvas)
+
 
         main_layout.addWidget(body_widget)
 
@@ -263,7 +265,32 @@ class LabPanel(QWidget):
 
     def set_context(self, context):
         self._context = context
+        if hasattr(self, "canvas") and self.canvas and hasattr(self.canvas, "set_context"):
+            self.canvas.set_context(context)
         self._update_canvas_context()
+
+    def _update_canvas_context(self):
+        if hasattr(self, "canvas") and self.canvas:
+            self.canvas.project = self._current_project
+            self.canvas._board_id = self._current_board_id
+
+            from ui.lab.nodes.node_context import NodeContext
+            proj_loc = getattr(self._current_project, "location", None) if self._current_project else None
+            thumb_svc = getattr(self._context, "thumbnail_service", None) if self._context else None
+            asset_svc = getattr(self._context, "asset_service", None) if self._context else None
+
+            node_ctx = NodeContext(
+                project_location=proj_loc,
+                thumbnail_service=thumb_svc,
+                asset_service=asset_svc,
+                app_context=self._context,
+                project=self._current_project,
+                board_id=self._current_board_id,
+            )
+            self.canvas.set_node_context(node_ctx)
+            if hasattr(self.canvas, "node_context") and self.canvas.node_context:
+                self.canvas.node_context.project = self._current_project
+                self.canvas.node_context.board_id = self._current_board_id
 
     def _toggle_sidebar(self):
         self._sidebar_visible = not self._sidebar_visible
@@ -280,7 +307,8 @@ class LabPanel(QWidget):
 
         if hasattr(self, "_save_timer") and self._save_timer.isActive():
             self._save_timer.stop()
-            self._persist_viewport()
+            if hasattr(self, "_persist_viewport"):
+                self._persist_viewport()
 
     def _on_project_nav_clicked(self):
         if self._context and hasattr(self._context, "workspace_manager") and self._context.workspace_manager:
@@ -289,9 +317,12 @@ class LabPanel(QWidget):
             else:
                 self._context.workspace_manager.show_home()
 
-    def show_project(self, project, board_id: str = None, board_name: str = None, target_node_id: str = None):
+    def show_project(self, project, board_id: str = None, board_name: str = None, target_node_id: str = None, force_reload: bool = False):
         # 1. Flush pending saves for previous project & board BEFORE changing references
         self.flush_pending_saves()
+
+        prev_project = self._current_project
+        prev_board_id = self._current_board_id
 
         # 2. Update current project reference
         self._current_project = project
@@ -323,23 +354,24 @@ class LabPanel(QWidget):
             manifest = lab_svc.get_manifest(project)
             target_board = manifest.get("active_board_id")
 
-        self._switch_to_board(target_board)
+        # Fast path guard: If already showing the exact project and board, don't reload disk and recreate canvas nodes!
+        project_same = (prev_project == project) if (prev_project and project) else (prev_project is None and project is None)
+        if not force_reload and project_same and prev_board_id and (prev_board_id == target_board or self._current_board_name == target_board):
+            if target_node_id and hasattr(self, "canvas") and self.canvas:
+                self.canvas.focus_node(target_node_id)
+            return
+
+        self._switch_to_board(target_board, force_reload=force_reload)
 
         if target_node_id and hasattr(self, "canvas") and self.canvas:
             self.canvas.focus_node(target_node_id)
 
-    def _switch_to_board(self, board_id: str):
+    def _switch_to_board(self, board_id: str, force_reload: bool = False):
         """Single canonical board switching pipeline used across all navigation entry points."""
         if not self._context or not getattr(self._context, "lab_service", None):
             return
 
         lab_svc = self._context.lab_service
-
-        # 1. Flush pending saves of previous board
-        self.flush_pending_saves()
-
-        # 2. Persist viewport of previous board
-        self._persist_viewport()
 
         # 3. Resolve target entry and set current board ID/name
         entry = lab_svc.get_board_entry(self._current_project, board_id)
@@ -347,13 +379,29 @@ class LabPanel(QWidget):
             boards = lab_svc.list_boards(self._current_project)
             entry = boards[0] if boards else None
 
+        target_id = entry["id"] if entry else board_id
+
+        # Fast path check: if board is already loaded and active, skip canvas clear & reload
+        if not force_reload and self._current_board_id == target_id and len(getattr(self.canvas, "_items_map", {})) > 0:
+            return
+
+        # 1. Flush pending saves of previous board
+        self.flush_pending_saves()
+
+        # 2. Persist viewport of previous board
+        if hasattr(self, "_persist_viewport"):
+            self._persist_viewport()
+
         if entry:
             self._current_board_id = entry["id"]
             self._current_board_name = entry["name"]
-            self.board_label.setText(f"— {self._current_board_name} Canvas")
+            if hasattr(self, "board_label") and self.board_label:
+                self.board_label.setText(f"— {self._current_board_name} Canvas")
 
         if self._current_board_id:
             lab_svc.set_active_board_id(self._current_project, self._current_board_id)
+
+        self._update_canvas_context()
 
         self._is_switching_board = True
         self._is_loading = True
@@ -371,7 +419,8 @@ class LabPanel(QWidget):
 
             # 6. Restore viewport
             viewport = board_data.get("viewport", {})
-            self.canvas.set_viewport_state(viewport)
+            if hasattr(self.canvas, "set_viewport_state"):
+                self.canvas.set_viewport_state(viewport)
 
             # Load nodes & connectors into scene
             disk_items = board_data.get("items", [])
@@ -379,7 +428,7 @@ class LabPanel(QWidget):
             self.canvas.blockSignals(True)
             try:
                 for item_data in disk_items:
-                    self.canvas.add_node(item_data)
+                    node = self.canvas.add_node(item_data)
                 for conn_data in disk_connectors:
                     self.canvas.add_connector(conn_data)
             finally:
@@ -394,6 +443,10 @@ class LabPanel(QWidget):
 
             # 8 & 9. Update UI sidebar selection and board label
             self._refresh_boards_sidebar()
+        except Exception as e:
+            import traceback
+            print(f"[CRITICAL EXCEPTION IN _switch_to_board]: {e}", flush=True)
+            traceback.print_exc()
         finally:
             self._is_loading = False
             self._is_switching_board = False
@@ -410,6 +463,23 @@ class LabPanel(QWidget):
 
         lab_svc = self._context.lab_service
         boards = lab_svc.list_boards(self._current_project)
+
+        # Optimization: Reuse sidebar items if board count and IDs match
+        if self.boards_list.count() == len(boards):
+            matches = True
+            for idx, b in enumerate(boards):
+                list_item = self.boards_list.item(idx)
+                if not list_item or list_item.data(Qt.UserRole) != b["id"]:
+                    matches = False
+                    break
+            if matches:
+                self.boards_list.blockSignals(True)
+                for idx, b in enumerate(boards):
+                    if b["id"] == self._current_board_id:
+                        self.boards_list.setCurrentItem(self.boards_list.item(idx))
+                        break
+                self.boards_list.blockSignals(False)
+                return
 
         self.boards_list.blockSignals(True)
         self.boards_list.clear()
@@ -428,6 +498,7 @@ class LabPanel(QWidget):
             self.boards_list.setCurrentItem(active_item)
 
         self.boards_list.blockSignals(False)
+
 
     def _on_sidebar_item_clicked(self, item: QListWidgetItem):
         if not item:
@@ -534,19 +605,6 @@ class LabPanel(QWidget):
                 new_active = lab_svc.get_active_board_id(self._current_project)
                 self._switch_to_board(new_active)
 
-    def _update_canvas_context(self):
-        from ui.lab.nodes.node_context import NodeContext
-        proj_loc = getattr(self._current_project, "location", None) if self._current_project else None
-        thumb_svc = getattr(self._context, "thumbnail_service", None) if self._context else None
-        asset_svc = getattr(self._context, "asset_service", None) if self._context else None
-
-        node_ctx = NodeContext(
-            project_location=proj_loc,
-            thumbnail_service=thumb_svc,
-            asset_service=asset_svc,
-            app_context=self._context,
-        )
-        self.canvas.set_node_context(node_ctx)
 
     def _on_camera_changed(self, viewport_state: dict):
         if getattr(self, "_is_loading", False) or getattr(self, "_is_switching_board", False):

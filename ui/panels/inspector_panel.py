@@ -351,6 +351,12 @@ class InspectorPanel(QWidget):
                 img_prev.clear()
             return img_prev
 
+        elif field.field_type == "action":
+            btn = QPushButton(str(field.value))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked=False, f=field, insp=inspectable: self._on_action_triggered(insp, f))
+            return btn
+
         elif field.field_type == "cover_actions":
             box = QWidget()
             btn_layout = QHBoxLayout(box)
@@ -414,3 +420,74 @@ class InspectorPanel(QWidget):
     def _on_project_service_updated(self, project):
         if self._current_inspectable and getattr(self._current_inspectable, "project", None) and self._current_inspectable.project.location == project.location:
             self._on_project_updated(project)
+
+    def _on_action_triggered(self, inspectable, field):
+        if not inspectable:
+            return
+        target_nodes = []
+        if hasattr(inspectable, "nodes") and inspectable.nodes:
+            target_nodes = list(inspectable.nodes)
+        elif hasattr(inspectable, "node_item") and inspectable.node_item:
+            target_nodes = [inspectable.node_item]
+
+        if not target_nodes:
+            return
+
+        action_type = "move" if field.key == "action_move_project" else "copy"
+        first_node = target_nodes[0]
+
+        if hasattr(first_node, "scene") and first_node.scene() and first_node.scene().views():
+            cv = first_node.scene().views()[0]
+            if hasattr(cv, "_prompt_promote_nodes"):
+                cv._prompt_promote_nodes(items=target_nodes, action=action_type)
+            elif hasattr(cv, "_prompt_promote_node"):
+                cv._prompt_promote_node(first_node, action=action_type)
+        else:
+            proj_svc = getattr(self._context, "project_service", None) if self._context else None
+            lab_svc = getattr(self._context, "lab_service", None) if self._context else None
+            if not lab_svc:
+                from services.lab_service import LabService
+                lab_svc = LabService(project_service=proj_svc)
+
+            from ui.dialogs.node_promotion_dialog import NodePromotionDialog
+            from PySide6.QtWidgets import QMessageBox, QDialog
+
+            source_project = getattr(first_node, "project", None)
+            if source_project is None and hasattr(first_node, "metadata") and isinstance(first_node.metadata, dict):
+                src_p_name = first_node.metadata.get("project_name")
+                if src_p_name and proj_svc:
+                    for p in proj_svc.all_projects():
+                        if getattr(p, "name", "") == src_p_name:
+                            source_project = p
+                            break
+
+            if source_project is None and self._context:
+                source_project = getattr(self._context, "current_project", None)
+
+            source_board_id = getattr(first_node, "_board_id", None)
+            if not source_board_id and hasattr(first_node, "metadata") and isinstance(first_node.metadata, dict):
+                source_board_id = first_node.metadata.get("board_id")
+            if not source_board_id and lab_svc:
+                source_board_id = lab_svc.get_active_board_id(source_project) or "Main"
+            if not source_board_id:
+                source_board_id = "Main"
+
+            dialog = NodePromotionDialog(self, action_type, source_project, source_board_id, proj_svc, lab_svc, target_nodes=target_nodes)
+            if dialog.exec_() == QDialog.Accepted:
+                p_target, b_id_target = dialog.get_selected_destination()
+                if b_id_target:
+                    target_ids = [n.id for n in target_nodes if hasattr(n, "id")]
+                    dialog_title = dialog.windowTitle()
+                    if action_type == "move":
+                        res = lab_svc.move_nodes(source_project, source_board_id, p_target, b_id_target, target_ids)
+                        if res:
+                            QMessageBox.information(self, "Nodes Moved", f"Moved {dialog_title} to target board.")
+                            self.inspect(None)
+                        else:
+                            QMessageBox.critical(self, "Move Failed", f"Could not move selected nodes.")
+                    else:
+                        res = lab_svc.copy_nodes(source_project, source_board_id, p_target, b_id_target, target_ids)
+                        if res:
+                            QMessageBox.information(self, "Nodes Copied", f"Copied {dialog_title} to target board.")
+                        else:
+                            QMessageBox.critical(self, "Copy Failed", f"Could not copy selected nodes.")

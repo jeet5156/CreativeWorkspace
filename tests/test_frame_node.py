@@ -168,10 +168,12 @@ class TestFrameNode(unittest.TestCase):
         adapter = NodeInspectable(frame)
         sections = adapter.get_inspection_sections()
 
-        self.assertEqual(len(sections), 3)
-        self.assertEqual(sections[0].title, "Knowledge Overview")
-        self.assertEqual(sections[1].title, "Frame Properties")
-        self.assertEqual(sections[2].title, "General Properties")
+        self.assertTrue(len(sections) >= 3)
+        sec_titles = [s.title for s in sections]
+        self.assertIn("Knowledge Overview", sec_titles)
+        self.assertIn("Frame Properties", sec_titles)
+        self.assertIn("General Properties", sec_titles)
+        self.assertIn("Actions", sec_titles)
 
         adapter.set_inspectable_property("payload.theme", "green")
         self.assertEqual(frame.payload.get("theme"), "green")

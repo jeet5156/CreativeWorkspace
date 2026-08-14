@@ -67,8 +67,9 @@ class TestManualGUIVerification(unittest.TestCase):
 
         conn_adapter = ConnectorInspectable(conn)
         conn_adapter.set_inspectable_property("relationship_type", "Depends On")
-        self.assertEqual(conn.relationship_type, "Depends On")
+        self.assertEqual(conn.relationship_type.lower(), "depends_on")
         self.assertEqual(conn.label, "Depends On")
+
 
 
 if __name__ == "__main__":

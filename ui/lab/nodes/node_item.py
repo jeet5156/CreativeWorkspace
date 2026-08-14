@@ -19,12 +19,38 @@ class NodeItem(QGraphicsObject):
 
     node_modified = Signal(object)
 
+    @property
+    def project(self):
+        if hasattr(self, "_project_val") and self._project_val is not None:
+            return self._project_val
+        return self.node_context.project if hasattr(self, "node_context") and self.node_context else None
+
+    @project.setter
+    def project(self, val):
+        self._project_val = val
+        if hasattr(self, "node_context") and self.node_context:
+            self.node_context.project = val
+
+    @property
+    def _board_id(self):
+        if hasattr(self, "_board_id_val") and self._board_id_val is not None:
+            return self._board_id_val
+        return self.node_context.board_id if hasattr(self, "node_context") and self.node_context else None
+
+    @_board_id.setter
+    def _board_id(self, val):
+        self._board_id_val = val
+        if hasattr(self, "node_context") and self.node_context:
+            self.node_context.board_id = val
+
     def __init__(self, definition: NodeDefinition, parent=None, node_context: NodeContext = None):
         super().__init__(parent)
         self.definition = definition
         self.node_context = node_context or NodeContext()
         self.id = str(uuid.uuid4())
         self.z_order = 1
+        self._project_val = None
+        self._board_id_val = None
 
         # Surface & Bounds
         self.width = definition.default_size[0] if definition else 260.0

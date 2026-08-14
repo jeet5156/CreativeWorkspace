@@ -14,3 +14,5 @@ class NodeContext:
     thumbnail_service: Optional[Any] = None
     asset_service: Optional[Any] = None
     app_context: Optional[Any] = None
+    project: Optional[Any] = None
+    board_id: Optional[str] = None

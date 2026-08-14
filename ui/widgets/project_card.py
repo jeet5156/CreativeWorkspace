@@ -8,8 +8,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QFrame,
     QSizePolicy,
+    QApplication,
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QMimeData
+from PySide6.QtGui import QDrag
 
 from models.project import Project
 from ui.widgets.image_preview import ImagePreview
@@ -20,19 +22,23 @@ class ProjectCard(QFrame):
     """Reusable project card component for Workspace Home landing experience.
 
     Displays cover artwork preview, project title, project type, status indicator,
-    last opened timestamp, and a pin toggle button.
+    last opened timestamp, pin toggle button, and supports drag & drop reordering.
     """
 
     clicked = Signal(object)
     double_clicked = Signal(object)
     pin_toggled = Signal(object)
+    card_reordered = Signal(str, str)  # (source_location, target_location)
 
     def __init__(self, project: Project, compact: bool = False, parent=None):
         super().__init__(parent)
         self.project = project
         self.compact = compact
         self._hovered = False
+        self._drag_start_pos = None
+        self._drag_performed = False
 
+        self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.setAttribute(Qt.WA_Hover, True)
         self.setCursor(Qt.PointingHandCursor)
@@ -190,14 +196,75 @@ class ProjectCard(QFrame):
             pass
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit(self.project)
-        super().mousePressEvent(event)
+        if event and event.button() == Qt.LeftButton:
+            child = self.childAt(event.pos())
+            if child and (child == self.pin_button or self.pin_button.isAncestorOf(child)):
+                self._drag_start_pos = None
+                self._drag_performed = False
+            else:
+                self._drag_start_pos = event.pos()
+                self._drag_performed = False
+            super().mousePressEvent(event)
+        elif not event:
+            if self.project:
+                self.clicked.emit(self.project)
+
+    def mouseMoveEvent(self, event):
+        if not event or not (event.buttons() & Qt.LeftButton) or not self._drag_start_pos:
+            return super().mouseMoveEvent(event) if event else None
+
+        threshold = QApplication.startDragDistance() if QApplication.instance() else 10
+        if (event.pos() - self._drag_start_pos).manhattanLength() < threshold:
+            return super().mouseMoveEvent(event)
+
+        self._drag_performed = True
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        loc = getattr(self.project, "location", "") if self.project else ""
+        mime_data.setText(loc)
+        drag.setMimeData(mime_data)
+        drag.exec_(Qt.MoveAction)
+
+    def mouseReleaseEvent(self, event):
+        if event and event.button() == Qt.LeftButton:
+            threshold = QApplication.startDragDistance() if QApplication.instance() else 10
+            if not self._drag_performed and self._drag_start_pos and (event.pos() - self._drag_start_pos).manhattanLength() < threshold:
+                child = self.childAt(event.pos())
+                if not child or not (child == self.pin_button or self.pin_button.isAncestorOf(child)):
+                    if self.project:
+                        self.clicked.emit(self.project)
+            self._drag_start_pos = None
+            self._drag_performed = False
+            super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.double_clicked.emit(self.project)
+        if event and event.button() == Qt.LeftButton:
+            if self.project:
+                self.double_clicked.emit(self.project)
         super().mouseDoubleClickEvent(event)
+
+    def dragEnterEvent(self, event):
+        if event and event.mimeData() and event.mimeData().hasText():
+            event.acceptProposedAction()
+            self.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {CARD_HOVER};
+                    border: 2px dashed {ACCENT};
+                    border-radius: 8px;
+                }}
+            """)
+
+    def dragLeaveEvent(self, event):
+        self._update_appearance()
+
+    def dropEvent(self, event):
+        if event and event.mimeData():
+            source_loc = event.mimeData().text()
+            target_loc = getattr(self.project, "location", "") if self.project else ""
+            if source_loc and target_loc and source_loc != target_loc:
+                self.card_reordered.emit(source_loc, target_loc)
+            event.acceptProposedAction()
+        self.dragLeaveEvent(event)
 
     def enterEvent(self, event):
         self._hovered = True

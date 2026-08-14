@@ -55,8 +55,8 @@ class TestThumbnailAndNavigation(unittest.TestCase):
         lab_item = explorer.lab_root
         explorer._on_tree_item_clicked(lab_item, 0)
 
-        # Verify stacked widget switched to Lab panel
-        self.assertEqual(workspace.stack.currentWidget(), manager.lab_panel)
+        # Verify stacked widget switched to Home panel
+        self.assertEqual(workspace.stack.currentWidget(), workspace.home)
 
     def test_thumbnail_service_threadpool_and_failed_caching(self):
         """Verify ThumbnailService max thread count is 2 and failed thumbnails are cached."""

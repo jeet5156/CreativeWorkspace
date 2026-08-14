@@ -197,6 +197,8 @@ class NoteNodeItem(NodeItem):
         existing_titles = set()
         if hasattr(self.scene(), "views") and self.scene().views():
             canvas = self.scene().views()[0]
+            if hasattr(canvas, "_is_loading") and canvas._is_loading:
+                return existing_titles
             if hasattr(canvas, "_items_map"):
                 for item in canvas._items_map.values():
                     if item:
@@ -206,6 +208,7 @@ class NoteNodeItem(NodeItem):
                         if t:
                             existing_titles.add(str(t))
         return existing_titles
+
 
     def _render_preview(self):
         """Render raw markdown into QTextDocument passing current canvas node titles for live wiki link styling."""
