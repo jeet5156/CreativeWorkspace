@@ -260,6 +260,9 @@ class PinnedCard(QFrame):
             self.key = f"know::{n_id}"
         elif t_id == "library_asset":
             self.key = f"lib::{n_id}"
+        elif t_id == "lab_board":
+            loc_str = str(p_obj.location) if p_obj else "__workbench__"
+            self.key = f"board::{loc_str}::{b_id}"
         else:
             loc_str = str(p_obj.location) if p_obj else "__workbench__"
             self.key = f"{loc_str}::{b_id}::{n_id}"
@@ -293,7 +296,32 @@ class PinnedCard(QFrame):
         hdr_row.setSpacing(6)
 
         payload = item_data.get("payload", {}) if isinstance(item_data.get("payload"), dict) else {}
-        title = payload.get("title") or payload.get("filename") or payload.get("name") or t_id
+        title = payload.get("title") or payload.get("filename") or payload.get("name")
+        if not title:
+            # Extract clean title from first non-empty line of content if note
+            content_val = payload.get("content") or payload.get("text") or payload.get("caption") or payload.get("description") or ""
+            if content_val and isinstance(content_val, str):
+                for line in content_val.splitlines():
+                    clean_l = line.strip()
+                    for prefix in ("- [ ]", "* [ ]", "+ [ ]", "- [x]", "* [x]", "+ [x]", "[ ]", "[x]", "#", "##", "###"):
+                        if clean_l.startswith(prefix):
+                            clean_l = clean_l[len(prefix):].strip()
+                    if clean_l:
+                        title = clean_l[:40] + ("..." if len(clean_l) > 40 else "")
+                        break
+        if not title:
+            type_map = {
+                "note.problem": "Problem Note",
+                "note.goal": "Goal Note",
+                "note.blank": "Note",
+                "note.decision": "Decision Note",
+                "note.task": "Task Note",
+                "task": "Task",
+                "image": "Image",
+                "image_preview": "Image Preview",
+                "lab_board": "Lab Board",
+            }
+            title = type_map.get(t_id, t_id.replace("note.", "").replace(".", " ").capitalize() if t_id else "Pinned Item")
 
         if t_id == "project":
             icon_prefix = "📁 "
@@ -301,10 +329,14 @@ class PinnedCard(QFrame):
             icon_prefix = "📄 "
         elif t_id == "library_asset":
             icon_prefix = "📚 "
+        elif t_id == "lab_board":
+            icon_prefix = "🎨 "
         elif t_id in ("image", "image_preview"):
             icon_prefix = "🖼️ "
         elif t_id == "task":
             icon_prefix = "☑️ "
+        elif str(t_id).startswith("note."):
+            icon_prefix = "📝 "
         else:
             icon_prefix = "📌 "
 
@@ -347,6 +379,12 @@ class PinnedCard(QFrame):
             badge_str = "⭐ Favorite Note"
         elif t_id == "library_asset":
             badge_str = "📚 Library Asset"
+        elif t_id == "lab_board":
+            b_name = item_data.get("_board_name", "Main")
+            if p_obj:
+                badge_str = f"🎨 {p_obj.name} · {b_name} Board"
+            else:
+                badge_str = f"🛠️ Workbench · {b_name} Board"
         else:
             b_name = item_data.get("_board_name", "Main")
             if p_obj:
@@ -1021,6 +1059,14 @@ class HomeWorkspacePanel(QWidget):
                 if wm:
                     from core.navigation import NavigationPayload
                     wm.navigate(NavigationPayload.for_library_asset(asset_id))
+            elif t_type == "lab_board":
+                p_obj = item_data.get("project")
+                b_id = item_data.get("_board_id") or item_data.get("_board_name", "Main")
+                if wm:
+                    from core.navigation import NavigationPayload
+                    wm.navigate(NavigationPayload.for_lab_board(b_id, project_or_name=p_obj))
+                else:
+                    self.open_board_requested.emit(p_obj, b_id, None)
             else:
                 p_obj = item_data.get("project")
                 b_id = item_data.get("_board_id") or item_data.get("_board_name", "Main")
@@ -1053,10 +1099,38 @@ class HomeWorkspacePanel(QWidget):
         if not context or not getattr(context, "project_service", None):
             return
 
-        if not getattr(self, "_project_updated_connected", False):
+        # Wire reactive signal updates cleanly and idempotently
+        if not getattr(self, "_signals_connected", False):
+            self._signals_connected = True
             try:
-                context.project_service.project_updated.connect(lambda p: self.set_context(self._context))
-                self._project_updated_connected = True
+                if getattr(context, "project_service", None):
+                    context.project_service.project_updated.connect(lambda p: self.set_context(self._context))
+                    context.project_service.project_created.connect(lambda p: self.set_context(self._context))
+                    context.project_service.project_deleted.connect(lambda p: self.set_context(self._context))
+            except Exception:
+                pass
+            try:
+                if getattr(context, "knowledge_service", None):
+                    context.knowledge_service.document_updated.connect(lambda d: self.set_context(self._context))
+                    context.knowledge_service.document_created.connect(lambda d: self.set_context(self._context))
+                    context.knowledge_service.document_deleted.connect(lambda did: self.set_context(self._context))
+                    context.knowledge_service.knowledge_reloaded.connect(lambda: self.set_context(self._context))
+            except Exception:
+                pass
+            try:
+                if getattr(context, "lab_service", None):
+                    context.lab_service.board_updated.connect(lambda p, bid: self.set_context(self._context))
+                    context.lab_service.manifest_updated.connect(lambda p: self.set_context(self._context))
+            except Exception:
+                pass
+            try:
+                if getattr(context, "library_service", None):
+                    if hasattr(context.library_service, "asset_updated"):
+                        context.library_service.asset_updated.connect(lambda a: self.set_context(self._context))
+                    if hasattr(context.library_service, "asset_created"):
+                        context.library_service.asset_created.connect(lambda a: self.set_context(self._context))
+                    if hasattr(context.library_service, "asset_deleted"):
+                        context.library_service.asset_deleted.connect(lambda aid: self.set_context(self._context))
             except Exception:
                 pass
 
@@ -1145,83 +1219,36 @@ class HomeWorkspacePanel(QWidget):
                         break
 
         all_tasks = []
-        all_pinned = []
         all_attention = []
 
-        # Include Projects marked favorite=True / is_pinned=True in Pinned References & Favorites
-        for p in projects:
-            if getattr(p, "is_pinned", False):
-                all_pinned.append({
-                    "id": f"proj_fav_{p.location}",
-                    "type": "project",
-                    "project": p,
-                    "payload": {
-                        "title": p.name,
-                        "content": f"📁 {(getattr(p, 'project_type', None) or 'general').capitalize()} Project · Favorite",
-                    },
-                    "_board_id": None,
-                    "_board_name": None,
-                })
+        lab_pinned_items = []
+        knowledge_fav_items = []
+        library_fav_items = []
+        project_fav_items = []
 
-        # Include Favorite Knowledge Notes
-        if hasattr(self._context, "knowledge_service") and self._context.knowledge_service:
-            try:
-                fav_docs = self._context.knowledge_service.list_documents(favorite_only=True)
-                for d in fav_docs:
-                    all_pinned.append({
-                        "id": d.id,
-                        "type": "knowledge",
-                        "project": None,
-                        "payload": {
-                            "title": d.title,
-                            "content": getattr(d, "content_preview", None) or (d.content[:120] if d.content else ""),
-                        },
-                        "_board_id": None,
-                        "_board_name": None,
-                    })
-            except Exception:
-                pass
-
-        # Include Favorite Library Assets
-        if hasattr(self._context, "library_service") and self._context.library_service:
-            try:
-                lib_svc = self._context.library_service
-                if hasattr(lib_svc, "get_favorite_assets"):
-                    fav_assets = lib_svc.get_favorite_assets()
-                    for a in fav_assets:
-                        all_pinned.append({
-                            "id": a.id if hasattr(a, "id") else a.get("id"),
-                            "type": "library_asset",
-                            "project": None,
-                            "payload": {
-                                "title": a.filename if hasattr(a, "filename") else a.get("filename", "Asset"),
-                                "content": "⭐ Favorite Library Asset",
-                            },
-                            "_board_id": None,
-                            "_board_name": None,
-                        })
-            except Exception:
-                pass
-
+        # 1. Pinned Lab Nodes & Favorite/Pinned Lab Boards
         if hasattr(self._context, "lab_service") and self._context.lab_service:
             lab_svc = self._context.lab_service
 
-            for p in sorted_projects:
-                try:
-                    summary = lab_svc.get_project_summary_metadata(p)
-                    for t in summary.get("task_stats", {}).get("items", []):
-                        t_copy = dict(t)
-                        t_copy["project"] = p
-                        all_tasks.append(t_copy)
-                    for pin in summary.get("pinned_nodes", []):
-                        pin_copy = dict(pin)
-                        pin_copy["project"] = p
-                        all_pinned.append(pin_copy)
-                except Exception:
-                    pass
-
-            # Fetch global Workbench summary metadata
+            # A. Workbench boards & pinned nodes
             try:
+                wb_boards = lab_svc.list_boards(None)
+                for b in wb_boards:
+                    if isinstance(b, dict) and (b.get("favorite") or b.get("is_pinned") or b.get("pinned")):
+                        b_id = b.get("id")
+                        b_name = b.get("name", "Main")
+                        lab_pinned_items.append({
+                            "id": f"lab_board_{b_id}",
+                            "type": "lab_board",
+                            "project": None,
+                            "payload": {
+                                "title": b_name,
+                                "content": "🎨 Workbench Board · Favorite",
+                            },
+                            "_board_id": b_id,
+                            "_board_name": b_name,
+                        })
+
                 wb_summary = lab_svc.get_project_summary_metadata(None)
                 for t in wb_summary.get("task_stats", {}).get("items", []):
                     t_copy = dict(t)
@@ -1230,9 +1257,41 @@ class HomeWorkspacePanel(QWidget):
                 for pin in wb_summary.get("pinned_nodes", []):
                     pin_copy = dict(pin)
                     pin_copy["project"] = None
-                    all_pinned.append(pin_copy)
+                    lab_pinned_items.append(pin_copy)
             except Exception:
                 pass
+
+            # B. Project boards & pinned nodes
+            for p in sorted_projects:
+                try:
+                    p_boards = lab_svc.list_boards(p)
+                    for b in p_boards:
+                        if isinstance(b, dict) and (b.get("favorite") or b.get("is_pinned") or b.get("pinned")):
+                            b_id = b.get("id")
+                            b_name = b.get("name", "Main")
+                            lab_pinned_items.append({
+                                "id": f"lab_board_{b_id}",
+                                "type": "lab_board",
+                                "project": p,
+                                "payload": {
+                                    "title": b_name,
+                                    "content": f"🎨 {p.name} Board · Favorite",
+                                },
+                                "_board_id": b_id,
+                                "_board_name": b_name,
+                            })
+
+                    summary = lab_svc.get_project_summary_metadata(p)
+                    for t in summary.get("task_stats", {}).get("items", []):
+                        t_copy = dict(t)
+                        t_copy["project"] = p
+                        all_tasks.append(t_copy)
+                    for pin in summary.get("pinned_nodes", []):
+                        pin_copy = dict(pin)
+                        pin_copy["project"] = p
+                        lab_pinned_items.append(pin_copy)
+                except Exception:
+                    pass
 
             # Collect Attention items (Urgent 🔴 & Important 🟡) across pinned & unpinned items
             for p in list(sorted_projects) + [None]:
@@ -1262,9 +1321,68 @@ class HomeWorkspacePanel(QWidget):
             # Sort Needs Attention items: Urgent first, then Important
             all_attention.sort(key=lambda x: 0 if x.get("_attention") == "urgent" else 1)
 
-            # Reorder pinned nodes based on saved Home presentation preferences
+        # 2. Favorite / Pinned Knowledge Notes
+        if hasattr(self._context, "knowledge_service") and self._context.knowledge_service:
             try:
-                saved_order = lab_svc.get_pinned_order()
+                fav_docs = self._context.knowledge_service.list_documents(favorite_only=True)
+                for d in fav_docs:
+                    knowledge_fav_items.append({
+                        "id": d.id,
+                        "type": "knowledge",
+                        "project": None,
+                        "payload": {
+                            "title": d.title,
+                            "content": getattr(d, "content_preview", None) or (d.content[:120] if d.content else ""),
+                        },
+                        "_board_id": None,
+                        "_board_name": None,
+                    })
+            except Exception:
+                pass
+
+        # 3. Favorite Library Assets
+        if hasattr(self._context, "library_service") and self._context.library_service:
+            try:
+                lib_svc = self._context.library_service
+                if hasattr(lib_svc, "get_favorite_assets"):
+                    fav_assets = lib_svc.get_favorite_assets()
+                    for a in fav_assets:
+                        library_fav_items.append({
+                            "id": a.id if hasattr(a, "id") else a.get("id"),
+                            "type": "library_asset",
+                            "project": None,
+                            "payload": {
+                                "title": a.filename if hasattr(a, "filename") else a.get("filename", "Asset"),
+                                "content": "⭐ Favorite Library Asset",
+                            },
+                            "_board_id": None,
+                            "_board_name": None,
+                        })
+            except Exception:
+                pass
+
+        # 4. Pinned Projects
+        for p in projects:
+            if getattr(p, "is_pinned", False):
+                project_fav_items.append({
+                    "id": f"proj_fav_{p.location}",
+                    "type": "project",
+                    "project": p,
+                    "payload": {
+                        "title": p.name,
+                        "content": f"📁 {(getattr(p, 'project_type', None) or 'general').capitalize()} Project · Favorite",
+                    },
+                    "_board_id": None,
+                    "_board_name": None,
+                })
+
+        # Default stable grouping order: Lab items -> Knowledge notes -> Library assets -> Projects
+        all_pinned = lab_pinned_items + knowledge_fav_items + library_fav_items + project_fav_items
+
+        # Reorder pinned nodes based on saved Home presentation preferences
+        if hasattr(self._context, "lab_service") and self._context.lab_service:
+            try:
+                saved_order = self._context.lab_service.get_pinned_order()
                 if saved_order:
                     key_map = {}
                     for pin in all_pinned:
@@ -1276,6 +1394,10 @@ class HomeWorkspacePanel(QWidget):
                             k = f"know::{pin.get('id')}"
                         elif t_id == "library_asset":
                             k = f"lib::{pin.get('id')}"
+                        elif t_id == "lab_board":
+                            loc_str = str(p_obj.location) if p_obj else "__workbench__"
+                            b_id = pin.get("_board_id") or pin.get("_board_name", "Main")
+                            k = f"board::{loc_str}::{b_id}"
                         else:
                             b_id = pin.get("_board_id") or pin.get("_board_name", "Main")
                             n_id = pin.get("id")
@@ -1360,7 +1482,7 @@ class HomeWorkspacePanel(QWidget):
             self.pins_grid.addWidget(lbl, 0, 0)
         else:
             cols = self._calc_columns()
-            for idx, p_item in enumerate(all_pinned[:6]):
+            for idx, p_item in enumerate(all_pinned):
                 col = idx % cols
                 row = idx // cols
 
@@ -1650,6 +1772,10 @@ class HomeWorkspacePanel(QWidget):
                 current_keys.append(f"know::{pin.get('id')}")
             elif t_id == "library_asset":
                 current_keys.append(f"lib::{pin.get('id')}")
+            elif t_id == "lab_board":
+                loc_str = str(p_obj.location) if p_obj else "__workbench__"
+                b_id = pin.get("_board_id") or pin.get("_board_name", "Main")
+                current_keys.append(f"board::{loc_str}::{b_id}")
             else:
                 b_id = pin.get("_board_id") or pin.get("_board_name", "Main")
                 n_id = pin.get("id")
