@@ -30,6 +30,9 @@ from models.project_assistant import (
     ProjectSourceType,
     TraceableSourceItem,
     ProjectAssistantResponse,
+    ProjectHealthFinding,
+    FindingSeverity,
+    FindingCategory,
 )
 from services.ai_service import AIService, AIWorker
 from services.project_context_service import ProjectContextService
@@ -108,7 +111,7 @@ class ProjectAssistantService(QObject):
             self.clear_history()
 
     # -------------------------------------------------------------------------
-    # Context Resolution & Prompt Formatting
+    # Context Resolution & Health Evaluation
     # -------------------------------------------------------------------------
 
     def resolve_project_context(self, project_or_id: Any) -> Optional[ProjectContext]:
@@ -120,6 +123,134 @@ class ProjectAssistantService(QObject):
             return self.project_context_service.get_project_context(project_or_id)
 
         return None
+
+    def evaluate_project_health(self, project_or_ctx: Any) -> List[ProjectHealthFinding]:
+        """Deterministically evaluate structured project context to produce actionable health findings."""
+        ctx = self.resolve_project_context(project_or_ctx)
+        if not ctx:
+            return []
+
+        findings: List[ProjectHealthFinding] = []
+
+        # 1. Missing Library References (Critical)
+        avail = ctx.availability_summary
+        linked_refs = ctx.library_summary.linked_assets
+        missing_refs = [r for r in linked_refs if r.get("availability_status") == "missing"]
+        if avail.missing_library_assets > 0 or missing_refs:
+            cnt = avail.missing_library_assets or len(missing_refs)
+            names = [r.get("filename") or r.get("title", "Asset") for r in missing_refs[:3]]
+            names_str = f" ({', '.join(names)})" if names else ""
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.CRITICAL.value,
+                category=FindingCategory.LIBRARY.value,
+                title=f"{cnt} Missing Library Asset(s)",
+                explanation=f"{cnt} linked external asset(s) cannot be found at their catalog destination paths{names_str}.",
+                related_entity_ids=[str(r.get("id") or r.get("library_asset_id")) for r in missing_refs if r.get("id") or r.get("library_asset_id")],
+                source_metadata={"missing_count": cnt, "references": missing_refs},
+            ))
+
+        # 2. Offline Library References (Warning)
+        offline_refs = [r for r in linked_refs if r.get("availability_status") == "offline" or not r.get("is_online", True)]
+        if avail.offline_library_assets > 0 or offline_refs:
+            cnt = avail.offline_library_assets or len(offline_refs)
+            drives = sorted({r.get("drive_id") for r in offline_refs if r.get("drive_id")})
+            drv_str = f" Mount drive(s): {', '.join(drives)}." if drives else ""
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.WARNING.value,
+                category=FindingCategory.LIBRARY.value,
+                title=f"{cnt} Offline Library Dependency(ies)",
+                explanation=f"{cnt} referenced asset(s) are on disconnected external drives.{drv_str}",
+                related_entity_ids=[str(r.get("id") or r.get("library_asset_id")) for r in offline_refs if r.get("id") or r.get("library_asset_id")],
+                source_metadata={"offline_count": cnt, "required_drives": drives},
+            ))
+
+        # 3. Changed Library References (Warning)
+        changed_refs = [r for r in linked_refs if r.get("availability_status") == "changed"]
+        if avail.possibly_changed_assets > 0 or changed_refs:
+            cnt = avail.possibly_changed_assets or len(changed_refs)
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.WARNING.value,
+                category=FindingCategory.LIBRARY.value,
+                title=f"{cnt} Changed External Reference(s)",
+                explanation=f"{cnt} library asset(s) have timestamp or file size deviations from the indexed catalog.",
+                related_entity_ids=[str(r.get("id") or r.get("library_asset_id")) for r in changed_refs if r.get("id") or r.get("library_asset_id")],
+                source_metadata={"changed_count": cnt},
+            ))
+
+        # 4. Open / Outstanding Lab Tasks
+        tasks = ctx.lab_summary.task_status
+        total_tasks = tasks.get("total", 0)
+        pending_tasks = tasks.get("pending", 0)
+        completed_tasks = tasks.get("completed", 0)
+        if total_tasks > 0 and pending_tasks > 0:
+            sev = FindingSeverity.WARNING.value if pending_tasks > (total_tasks / 2) else FindingSeverity.INFO.value
+            findings.append(ProjectHealthFinding(
+                severity=sev,
+                category=FindingCategory.LAB.value,
+                title=f"{pending_tasks} Open Lab Checklist Task(s)",
+                explanation=f"{completed_tasks} of {total_tasks} checklist tasks completed ({pending_tasks} outstanding).",
+                related_entity_ids=[],
+                source_metadata=tasks,
+            ))
+        elif total_tasks > 0 and pending_tasks == 0:
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.INFO.value,
+                category=FindingCategory.LAB.value,
+                title="All Lab Checklist Tasks Completed",
+                explanation=f"All {total_tasks} checklist tasks across Creative Lab boards are complete.",
+                related_entity_ids=[],
+                source_metadata=tasks,
+            ))
+
+        # 5. Documentation Status
+        notes_cnt = ctx.knowledge_summary.total_notes
+        if notes_cnt == 0:
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.INFO.value,
+                category=FindingCategory.KNOWLEDGE.value,
+                title="No Linked Knowledge Documentation",
+                explanation="No design bibles, lore documents, or notes are currently linked to this project or its assets.",
+                related_entity_ids=[],
+                source_metadata={"total_notes": 0},
+            ))
+        else:
+            favs = ctx.knowledge_summary.favorite_notes
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.INFO.value,
+                category=FindingCategory.KNOWLEDGE.value,
+                title=f"{notes_cnt} Linked Documentation Note(s)",
+                explanation=f"{notes_cnt} knowledge document(s) associated with project ({favs} marked as favorite).",
+                related_entity_ids=[n.get("id") for n in ctx.knowledge_summary.recent_notes if n.get("id")],
+                source_metadata={"total_notes": notes_cnt, "favorite_notes": favs},
+            ))
+
+        # 6. Local Asset & Version Status
+        if ctx.asset_summary.version_groups:
+            v_groups = ctx.asset_summary.version_groups
+            v_summary = [f"{g.get('logical_name')} ({g.get('latest')})" for g in v_groups[:3]]
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.INFO.value,
+                category=FindingCategory.ASSETS.value,
+                title=f"{len(v_groups)} Version Sequence(s)",
+                explanation=f"Detected version sequences: {', '.join(v_summary)}{'...' if len(v_groups) > 3 else ''}.",
+                related_entity_ids=[],
+                source_metadata={"version_groups_count": len(v_groups)},
+            ))
+
+        # 7. Project Metadata / Priority
+        prio = getattr(ctx, "priority", None) or ctx.metadata.get("priority", "")
+        stat = getattr(ctx, "status", None) or ctx.metadata.get("status", "")
+        if str(prio).lower() == "high":
+            findings.append(ProjectHealthFinding(
+                severity=FindingSeverity.INFO.value,
+                category=FindingCategory.PROJECT.value,
+                title="High Priority Project",
+                explanation=f"Project is flagged High Priority with active status '{stat or 'active'}'.",
+                related_entity_ids=[],
+                source_metadata={"priority": prio, "status": stat},
+            ))
+
+        return findings
 
     def format_project_context_prompt(self, ctx: ProjectContext) -> str:
         """Format complete, structured ProjectContext into a compact prompt section."""
@@ -157,7 +288,16 @@ class ProjectAssistantService(QObject):
         lines.append(f"Location Path: {ctx.project_path}")
         lines.append("")
 
-        # 2. Local Assets & Version Sequences
+        # 2. Project Health & Production Findings
+        findings = self.evaluate_project_health(ctx)
+        if findings:
+            lines.append("=== PROJECT HEALTH & PRODUCTION FINDINGS ===")
+            for f in findings:
+                sev_tag = f.severity.upper()
+                lines.append(f"[{sev_tag}] {f.title}: {f.explanation}")
+            lines.append("")
+
+        # 3. Local Assets & Version Sequences
         lines.append("=== PROJECT ASSETS & VERSIONS ===")
         lines.append(f"Total Local Assets: {ctx.asset_summary.total_assets}")
         if ctx.asset_summary.by_category:
@@ -174,7 +314,7 @@ class ProjectAssistantService(QObject):
                 lines.append(f"- {grp.get('logical_name')}: {v_list} (Latest: {grp.get('latest')})")
         lines.append("")
 
-        # 3. Library References & Availability Breakdown
+        # 4. Library References & Availability Breakdown
         lines.append("=== LIBRARY REFERENCES & PORTABLE DRIVE AVAILABILITY ===")
         lines.append(f"Total References: {ctx.library_summary.total_linked_assets}")
         avail = ctx.availability_summary
@@ -205,7 +345,7 @@ class ProjectAssistantService(QObject):
                 lines.append(f"- {fn} [CHANGED timestamp/size]")
         lines.append("")
 
-        # 4. Knowledge & Documentation
+        # 5. Knowledge & Documentation
         lines.append("=== KNOWLEDGE & DOCUMENTATION ===")
         lines.append(f"Total Linked Notes: {ctx.knowledge_summary.total_notes} (Favorites: {ctx.knowledge_summary.favorite_notes})")
         if ctx.knowledge_summary.recent_notes:
@@ -216,7 +356,7 @@ class ProjectAssistantService(QObject):
                 lines.append(f"- {note.get('title', 'Untitled Note')}{fav_str}{tag_str}")
         lines.append("")
 
-        # 5. Creative Lab Boards & Tasks
+        # 6. Creative Lab Boards & Tasks
         lines.append("=== CREATIVE LAB & TASKS ===")
         boards_list = ctx.lab_summary.recent_boards or getattr(ctx.lab_summary, "boards", [])
         if boards_list:
@@ -250,7 +390,8 @@ class ProjectAssistantService(QObject):
             "2. Do NOT invent, hallucinate, or assume unindexed files, external drives, or project state.\n"
             "3. Answer specifically and directly. When mentioning assets, version numbers (e.g. v004), knowledge notes, offline drives, or Lab boards, use their exact names from the context.\n"
             "4. If the user asks about something not present in the project context, explain what is currently indexed and state clearly what information is missing.\n"
-            "5. Be concise, structured, and helpful."
+            "5. Clearly distinguish between factual indexed data and operational recommendations.\n"
+            "6. Be concise, structured, and helpful."
         )
 
         context_body = self.format_project_context_prompt(ctx)
@@ -495,9 +636,12 @@ class ProjectAssistantService(QObject):
         self.add_history_message("user", question)
         self.add_history_message("assistant", answer_text)
 
+        findings = self.evaluate_project_health(ctx)
+
         result = ProjectAssistantResponse(
             answer=answer_text,
             sources=sources,
+            findings=findings,
             project_name=ctx.project_name if ctx else "",
             project_path=ctx.project_path if ctx else "",
             success=True,
@@ -545,6 +689,7 @@ class ProjectAssistantService(QObject):
 
             answer_text = (resp.text or "").strip()
             sources = self.extract_traceable_sources(question, answer_text, ctx)
+            findings = self.evaluate_project_health(ctx)
 
             self.add_history_message("user", question)
             self.add_history_message("assistant", answer_text)
@@ -552,6 +697,7 @@ class ProjectAssistantService(QObject):
             res = ProjectAssistantResponse(
                 answer=answer_text,
                 sources=sources,
+                findings=findings,
                 project_name=ctx.project_name if ctx else "",
                 project_path=ctx.project_path if ctx else "",
                 success=True,
@@ -579,3 +725,136 @@ class ProjectAssistantService(QObject):
             on_finished=_handle_raw_finished,
             on_error=_handle_raw_error,
         )
+
+    # -------------------------------------------------------------------------
+    # High-Level Project AI Operations (Phase 5B Step 1-3 Foundation)
+    # -------------------------------------------------------------------------
+
+    def summarize_project(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Generate a structured, comprehensive summary of the project."""
+        prompt = "Provide a comprehensive, structured summary of this project including its purpose, metadata, local assets & versions, library references availability, knowledge documents, and creative lab boards."
+        return self.ask(prompt, project_or_id)
+
+    def summarize_project_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Provide a comprehensive, structured summary of this project including its purpose, metadata, local assets & versions, library references availability, knowledge documents, and creative lab boards."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def ask_project_question(self, project_or_id: Any, question: str) -> ProjectAssistantResponse:
+        """Answer a targeted user question grounded in project context."""
+        return self.ask(question, project_or_id)
+
+    def ask_project_question_async(
+        self,
+        project_or_id: Any,
+        question: str,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        return self.ask_async(question, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def analyze_project_status(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Analyze project health, milestones, priorities, task progress, and blocking assets."""
+        prompt = "Analyze the current health and status of this project: evaluate deadlines, priorities, task progress, and any missing or offline assets."
+        return self.ask(prompt, project_or_id)
+
+    def analyze_project_status_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Analyze the current health and status of this project: evaluate deadlines, priorities, task progress, and any missing or offline assets."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def what_needs_attention(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Identify missing/offline library references, required drives, and open checklist tasks."""
+        prompt = "Identify all items that need immediate attention on this project: evaluate missing or offline external library references, required external drives, open/pending checklist tasks, and any critical production blockers."
+        return self.ask(prompt, project_or_id)
+
+    def what_needs_attention_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Identify all items that need immediate attention on this project: evaluate missing or offline external library references, required external drives, open/pending checklist tasks, and any critical production blockers."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def analyze_asset_dependencies(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Analyze local asset version groups and global external library dependencies."""
+        prompt = "Analyze the asset structure and dependencies of this project: explain local asset categories, version sequences and their latest iterations, and all external library references with their drive availability status."
+        return self.ask(prompt, project_or_id)
+
+    def analyze_asset_dependencies_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Analyze the asset structure and dependencies of this project: explain local asset categories, version sequences and their latest iterations, and all external library references with their drive availability status."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def summarize_documentation_overview(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Summarize all linked knowledge documentation, lore, and design guidelines."""
+        prompt = "Provide a documentation overview for this project: list all linked Knowledge documents (both explicit project relationships and asset-derived relationships), highlight favorite notes, tags, and summarize design guidelines and lore."
+        return self.ask(prompt, project_or_id)
+
+    def summarize_documentation_overview_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Provide a documentation overview for this project: list all linked Knowledge documents (both explicit project relationships and asset-derived relationships), highlight favorite notes, tags, and summarize design guidelines and lore."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def find_missing_assets(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Identify offline, missing, or changed library references and specify required drives."""
+        prompt = "Identify all offline, missing, or changed library references and external assets in this project. Specify which drives are needed to restore full availability."
+        return self.ask(prompt, project_or_id)
+
+    def find_missing_assets_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Identify all offline, missing, or changed library references and external assets in this project. Specify which drives are needed to restore full availability."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def summarize_project_knowledge(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Summarize knowledge documents, design guidelines, lore, and notes linked to the project."""
+        prompt = "Summarize the knowledge documentation, lore, design guidelines, and notes associated with this project."
+        return self.ask(prompt, project_or_id)
+
+    def summarize_project_knowledge_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Summarize the knowledge documentation, lore, design guidelines, and notes associated with this project."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+    def summarize_project_lab(self, project_or_id: Any) -> ProjectAssistantResponse:
+        """Summarize Creative Lab boards, spatial nodes, mind maps, and task checklists."""
+        prompt = "Summarize the Creative Lab boards, spatial nodes, mind maps, and task checklist statuses in this project."
+        return self.ask(prompt, project_or_id)
+
+    def summarize_project_lab_async(
+        self,
+        project_or_id: Any,
+        on_finished: Optional[Callable[[str, ProjectAssistantResponse], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ) -> Optional[AIWorker]:
+        prompt = "Summarize the Creative Lab boards, spatial nodes, mind maps, and task checklist statuses in this project."
+        return self.ask_async(prompt, project_or_id, on_finished=on_finished, on_error=on_error)
+
+
+# Canonical Phase 5B Alias
+ProjectAIService = ProjectAssistantService

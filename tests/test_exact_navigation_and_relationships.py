@@ -541,13 +541,15 @@ class TestExactNavigationAndRelationships(unittest.TestCase):
 
         # Verify AI Assistant widget resizing
         ai_w = dash.ai_assistant_widget
-        self.assertEqual(ai_w.scroll_area.minimumHeight(), 240)
+        self.assertEqual(ai_w.scroll_area.minimumHeight(), 320)
         ai_w._toggle_expand()
-        self.assertEqual(ai_w.scroll_area.minimumHeight(), 460)
-        self.assertEqual(ai_w.expand_btn.text(), "↕ Compact")
+        self.assertEqual(ai_w.scroll_area.minimumHeight(), 480)
+        self.assertIn("Expanded", ai_w.resize_btn.text())
         ai_w._toggle_expand()
-        self.assertEqual(ai_w.scroll_area.minimumHeight(), 240)
-        self.assertEqual(ai_w.expand_btn.text(), "↕ Expand")
+        self.assertEqual(ai_w.scroll_area.minimumHeight(), 680)
+        self.assertIn("Tall", ai_w.resize_btn.text())
+        ai_w._toggle_expand()
+        self.assertEqual(ai_w.scroll_area.minimumHeight(), 320)
 
 
 if __name__ == "__main__":

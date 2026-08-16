@@ -143,8 +143,10 @@ class AppContext:
                 project_context_service=self.project_context_service,
                 context=self,
             )
+            self.project_ai_service = self.project_assistant_service
         except Exception:
             self.project_assistant_service = None
+            self.project_ai_service = None
 
         self.current_project = None
 

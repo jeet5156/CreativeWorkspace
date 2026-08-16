@@ -338,6 +338,122 @@ class TestProjectAssistant(unittest.TestCase):
         self.assertNotIn("sk-secret-project-key-12345", req.prompt)
         self.assertNotIn("sk-secret-project-key-12345", req.system_instruction)
 
+    # -------------------------------------------------------------------------
+    # 11. High-Level Operations (Phase 5B Foundation)
+    # -------------------------------------------------------------------------
+
+    def test_11_summarize_project(self):
+        """Test summarize_project executes grounded summary."""
+        resp = self.service.summarize_project("CyberRacer")
+        self.assertTrue(resp.success)
+        self.assertIsNotNone(resp.answer)
+        self.assertEqual(resp.project_name, "CyberRacer")
+
+    def test_12_ask_project_question(self):
+        """Test ask_project_question passes targeted question."""
+        resp = self.service.ask_project_question("CyberRacer", "What are the latest asset versions?")
+        self.assertTrue(resp.success)
+        self.assertEqual(resp.project_name, "CyberRacer")
+
+    def test_13_analyze_project_status(self):
+        """Test analyze_project_status assesses health, deadlines, and tasks."""
+        resp = self.service.analyze_project_status("CyberRacer")
+        self.assertTrue(resp.success)
+        self.assertEqual(resp.project_name, "CyberRacer")
+
+    def test_14_find_missing_assets(self):
+        """Test find_missing_assets discovers offline/missing library references."""
+        resp = self.service.find_missing_assets("CyberRacer")
+        self.assertTrue(resp.success)
+        # Should attribute offline sources
+        has_offline = any(s.source_type == ProjectSourceType.LIBRARY_ASSET.value for s in resp.sources)
+        self.assertTrue(has_offline)
+
+    def test_15_summarize_project_knowledge(self):
+        """Test summarize_project_knowledge focuses on documentation and notes."""
+        resp = self.service.summarize_project_knowledge("CyberRacer")
+        self.assertTrue(resp.success)
+        has_knowledge = any(s.source_type == ProjectSourceType.KNOWLEDGE.value for s in resp.sources)
+        self.assertTrue(has_knowledge)
+
+    def test_16_summarize_project_lab(self):
+        """Test summarize_project_lab focuses on boards and tasks."""
+        resp = self.service.summarize_project_lab("CyberRacer")
+        self.assertTrue(resp.success)
+        has_lab = any(s.source_type in (ProjectSourceType.LAB_BOARD.value, ProjectSourceType.LAB_TASK.value) for s in resp.sources)
+        self.assertTrue(has_lab)
+
+    def test_17_project_ai_service_alias_and_import(self):
+        """Verify ProjectAIService alias and module exports."""
+        from services.project_ai_service import ProjectAIService as ImportedService
+        self.assertIs(ImportedService, ProjectAssistantService)
+
+    # -------------------------------------------------------------------------
+    # 12. Production Intelligence & Deterministic Health (Phase 5B Step 3)
+    # -------------------------------------------------------------------------
+
+    def test_18_evaluate_project_health_deterministic(self):
+        """Test deterministic project health evaluation on sample context."""
+        findings = self.service.evaluate_project_health(self.sample_context)
+        self.assertGreaterEqual(len(findings), 3)
+
+        # Offline warning
+        offline_f = next((f for f in findings if f.category == "library" and f.severity == "warning"), None)
+        self.assertIsNotNone(offline_f)
+        self.assertIn("Offline", offline_f.title)
+        self.assertIn("EXT_DRIVE_A", offline_f.explanation)
+
+        # Lab tasks
+        lab_f = next((f for f in findings if f.category == "lab"), None)
+        self.assertIsNotNone(lab_f)
+        self.assertIn("2 Open Lab Checklist Task(s)", lab_f.title)
+
+        # Knowledge notes
+        k_f = next((f for f in findings if f.category == "knowledge"), None)
+        self.assertIsNotNone(k_f)
+        self.assertIn("2 Linked Documentation Note(s)", k_f.title)
+
+    def test_19_what_needs_attention(self):
+        """Test what_needs_attention triggers grounded query and returns findings."""
+        resp = self.service.what_needs_attention("CyberRacer")
+        self.assertTrue(resp.success)
+        self.assertEqual(resp.project_name, "CyberRacer")
+        self.assertGreaterEqual(len(resp.findings), 1)
+
+    def test_20_analyze_asset_dependencies(self):
+        """Test analyze_asset_dependencies executes grounded analysis."""
+        resp = self.service.analyze_asset_dependencies("CyberRacer")
+        self.assertTrue(resp.success)
+        self.assertEqual(resp.project_name, "CyberRacer")
+
+    def test_21_summarize_documentation_overview(self):
+        """Test summarize_documentation_overview executes grounded documentation summary."""
+        resp = self.service.summarize_documentation_overview("CyberRacer")
+        self.assertTrue(resp.success)
+        self.assertEqual(resp.project_name, "CyberRacer")
+
+    def test_22_critical_missing_library_assets_finding(self):
+        """Test critical severity finding when missing library references exist."""
+        ctx_with_missing = ProjectContext(
+            project_name="MissingAssetsProject",
+            project_path="/proj/missing",
+            library_summary=ProjectLibrarySummary(
+                total_linked_assets=1,
+                missing_assets=1,
+                linked_assets=[{
+                    "id": "ref_m_1",
+                    "filename": "Hero_Prop_Missing.fbx",
+                    "availability_status": "missing",
+                }],
+            ),
+            availability_summary=ProjectAvailabilitySummary(missing_library_assets=1),
+        )
+        findings = self.service.evaluate_project_health(ctx_with_missing)
+        crit_f = next((f for f in findings if f.severity == "critical"), None)
+        self.assertIsNotNone(crit_f)
+        self.assertIn("Missing Library Asset", crit_f.title)
+        self.assertIn("Hero_Prop_Missing.fbx", crit_f.explanation)
+
 
 if __name__ == "__main__":
     unittest.main()

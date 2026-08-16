@@ -223,6 +223,83 @@ class TestProjectAssistantUI(unittest.TestCase):
 
         panel.deleteLater()
 
+    # -------------------------------------------------------------------------
+    # 7. Quick Action Buttons
+    # -------------------------------------------------------------------------
+
+    def test_07_quick_action_buttons(self):
+        """Test quick action buttons trigger structured question asking."""
+        with patch.object(self.widget, "ask_question") as mock_ask:
+            self.widget.btn_act_summary.click()
+            mock_ask.assert_called()
+
+        with patch.object(self.widget, "ask_question") as mock_ask:
+            self.widget.btn_act_status.click()
+            mock_ask.assert_called()
+
+        with patch.object(self.widget, "ask_question") as mock_ask:
+            self.widget.btn_act_attention.click()
+            mock_ask.assert_called()
+
+        with patch.object(self.widget, "ask_question") as mock_ask:
+            self.widget.btn_act_dependencies.click()
+            mock_ask.assert_called()
+
+        with patch.object(self.widget, "ask_question") as mock_ask:
+            self.widget.btn_act_knowledge.click()
+            mock_ask.assert_called()
+
+        with patch.object(self.widget, "ask_question") as mock_ask:
+            self.widget.btn_act_lab.click()
+            mock_ask.assert_called()
+
+    # -------------------------------------------------------------------------
+    # 8. Resizable Output Area Presets
+    # -------------------------------------------------------------------------
+
+    def test_08_resize_height_presets(self):
+        """Test cycling resize button changes conversation area minimum height."""
+        initial_h = self.widget.scroll_area.minimumHeight()
+        self.assertEqual(initial_h, 320)
+
+        self.widget.resize_btn.click()
+        self.assertEqual(self.widget.scroll_area.minimumHeight(), 480)
+        self.assertIn("Expanded", self.widget.resize_btn.text())
+
+        self.widget.resize_btn.click()
+        self.assertEqual(self.widget.scroll_area.minimumHeight(), 680)
+        self.assertIn("Tall", self.widget.resize_btn.text())
+
+        self.widget.resize_btn.click()
+        self.assertEqual(self.widget.scroll_area.minimumHeight(), 320)
+
+    # -------------------------------------------------------------------------
+    # 9. Context Transparency Viewer
+    # -------------------------------------------------------------------------
+
+    def test_09_context_viewer_dialog(self):
+        """Test context viewer dialog formats structured facts."""
+        facts = self.assistant_service.format_project_context_prompt(self.sample_context)
+        self.assertIn("CyberRacer", facts)
+        self.assertIn("Hero_Car", facts)
+        self.assertIn("City_Signs.fbx", facts)
+        self.assertIn("Level Design", facts)
+
+    # -------------------------------------------------------------------------
+    # 10. Copy and Disabled AI State
+    # -------------------------------------------------------------------------
+
+    def test_10_copy_and_disabled_state(self):
+        """Test copy action and disabled state UI updates."""
+        self.widget._last_assistant_answer = "Sample response text"
+        self.widget._copy_latest_response()
+
+        self.ai_service.set_enabled(False)
+        self.widget._update_ai_status()
+        self.assertFalse(self.widget.ask_btn.isEnabled())
+        self.assertFalse(self.widget.btn_act_summary.isEnabled())
+        self.assertIn("Disabled", self.widget.status_badge.text())
+
 
 if __name__ == "__main__":
     unittest.main()
