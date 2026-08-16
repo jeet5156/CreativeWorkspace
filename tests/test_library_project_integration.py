@@ -129,14 +129,14 @@ class TestLibraryProjectIntegration(unittest.TestCase):
 
         # Reload fresh AssetService
         fresh_asset_service = AssetService()
-        project_refs = fresh_asset_service.get_assets(self.project, category="References")
+        project_refs = fresh_asset_service.get_assets(self.project, category="library_references")
         self.assertEqual(len(project_refs), 1)
         self.assertEqual(project_refs[0]["filename"], "metal_diffuse.png")
         self.assertTrue(project_refs[0]["is_library_reference"])
 
         # Run rebuild_index and ensure reference is preserved
         fresh_asset_service.rebuild_index(self.project, force=True)
-        rebuilt_refs = fresh_asset_service.get_assets(self.project, category="References")
+        rebuilt_refs = fresh_asset_service.get_assets(self.project, category="library_references")
         self.assertEqual(len(rebuilt_refs), 1)
         self.assertTrue(rebuilt_refs[0]["is_library_reference"])
 
@@ -323,7 +323,7 @@ class TestLibraryProjectIntegration(unittest.TestCase):
             mock_info.assert_called_once()
 
         # Verify reference created in project
-        proj_refs = self.asset_service.get_assets(self.project, category="References")
+        proj_refs = self.asset_service.get_assets(self.project, category="library_references")
         self.assertEqual(len(proj_refs), 1)
         self.assertEqual(proj_refs[0]["filename"], "speeder.fbx")
         self.assertTrue(proj_refs[0]["is_library_reference"])
@@ -503,6 +503,62 @@ class TestLibraryProjectIntegration(unittest.TestCase):
         self.assertEqual(library_panel.get_selected_ids(), [lib_asset.id])
         self.assertIn(lib_asset.id, library_panel._cards)
         self.assertEqual(library_panel._cards[lib_asset.id].asset.get("availability"), "Offline")
+
+    def test_project_references_vs_library_references_segregation_and_legacy_records(self):
+        """Regression test for Issue 3B:
+        - 1 normal local project reference in References/
+        - 1 global library reference with legacy category 'References'
+        Verify:
+        - References returns only local file
+        - Library References returns only library asset
+        - Zero duplication across sections
+        """
+        # 1. Create a physical project reference in References/
+        ref_dir = Path(self.project.location) / "References"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        local_file = ref_dir / "local_concept.png"
+        local_file.write_bytes(b"LOCAL_CONCEPT_PNG")
+
+        self.asset_service.rebuild_index(self.project, force=True)
+
+        # 2. Inject a global library reference that has legacy category 'References'
+        legacy_lib_ref = {
+            "id": "lib_ref_legacy_001",
+            "filename": "legacy_texture.png",
+            "relative_path": "References/legacy_texture.png",
+            "category": "References",  # Old legacy record
+            "is_library_reference": True,
+            "library_asset_id": "lib_asset_legacy_001",
+            "drive_id": "drv_001",
+            "drive_relative_path": "textures/legacy_texture.png",
+            "friendly_type": "Texture",
+            "date_added": "2026-08-16T12:00:00",
+            "size": 1024,
+            "favorite": False,
+            "tags": [],
+            "notes": "",
+        }
+        assets = self.asset_service._ensure_index_loaded(self.project)
+        assets.append(legacy_lib_ref)
+        self.asset_service._save_index(self.project)
+
+        # 3. Query References
+        local_refs = self.asset_service.get_assets(self.project, category="References")
+        local_filenames = [a.get("filename") for a in local_refs]
+        self.assertIn("local_concept.png", local_filenames)
+        self.assertNotIn("legacy_texture.png", local_filenames)
+        self.assertFalse(any(a.get("is_library_reference") for a in local_refs))
+
+        # 4. Query Library References
+        lib_refs = self.asset_service.get_assets(self.project, category="Library References")
+        lib_filenames = [a.get("filename") for a in lib_refs]
+        self.assertIn("legacy_texture.png", lib_filenames)
+        self.assertNotIn("local_concept.png", lib_filenames)
+        self.assertTrue(all(a.get("is_library_reference") for a in lib_refs))
+
+        # 5. Query other local categories (e.g. Assets, Renders)
+        other_assets = self.asset_service.get_assets(self.project, category="Assets")
+        self.assertNotIn("legacy_texture.png", [a.get("filename") for a in other_assets])
 
 
 if __name__ == "__main__":

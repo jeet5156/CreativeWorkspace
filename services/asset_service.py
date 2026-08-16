@@ -129,7 +129,7 @@ class AssetService(QObject):
             if cat_lower in ("library_references", "library references", "library_reference"):
                 result = [a for a in result if bool(a.get("is_library_reference")) or (a.get("category") or "").lower() in ("library_references", "library references", "library_reference")]
             else:
-                result = [a for a in result if (a.get("category") or "").lower() == cat_lower]
+                result = [a for a in result if not bool(a.get("is_library_reference")) and (a.get("category") or "").lower() == cat_lower]
         if relative_path:
             target_dir = relative_path.replace("\\", "/").strip("/")
             filtered = []
@@ -648,7 +648,10 @@ class AssetService(QObject):
             notes = getattr(library_asset, "notes", "")
 
         ref_id = f"lib_ref_{lib_id}"
-        target_category_norm = target_category.capitalize() if target_category else "References"
+        if not target_category or target_category.lower() in ("references", "library references", "library_references", "library_reference"):
+            target_category_norm = "Library References"
+        else:
+            target_category_norm = target_category.capitalize()
         now_iso = datetime.now().isoformat()
 
         # Check if already referenced in project
