@@ -114,7 +114,6 @@ class ExplorerPanel(QWidget):
         self.business_root.setData(0, Qt.UserRole + 1, "business")
         self.tree.addTopLevelItem(self.business_root)
 
-        self.tree.itemClicked.connect(self.on_item_clicked)
         self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.itemCollapsed.connect(self._on_item_collapsed)
 
@@ -287,6 +286,7 @@ class ExplorerPanel(QWidget):
             ("📦 Assets", "assets"),
             ("🎬 Renders", "renders"),
             ("📤 Exports", "exports"),
+            ("📚 Library References", "library_references"),
         ]
 
         folder_service = self._get_folder_service()
@@ -297,12 +297,20 @@ class ExplorerPanel(QWidget):
             child.setData(0, ROLE_SECTION, section)
             
             # Map section to top-level folder name
-            top_folder = section.capitalize() if section != "assets" else "Assets"
+            if section == "library_references":
+                top_folder = "Library References"
+            elif section == "assets":
+                top_folder = "Assets"
+            else:
+                top_folder = section.capitalize()
             child.setData(0, ROLE_REL_PATH, top_folder)
             child.setData(0, ROLE_NODE_TYPE, "category")
             
-            if section == "lab":
-                child.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+            if section in ("lab", "library_references"):
+                if section == "lab":
+                    child.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                else:
+                    child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
             else:
                 has_subfolders = False
                 if folder_service:
@@ -396,6 +404,13 @@ class ExplorerPanel(QWidget):
         rel_path = item.data(0, ROLE_REL_PATH)
 
         if project:
+            if isinstance(project, Project):
+                self._update_project_card_selection(project)
+                if getattr(self, '_context', None) and getattr(self._context, 'inspector_panel', None):
+                    try:
+                        self._context.inspector_panel.show_project(project)
+                    except Exception:
+                        pass
             try:
                 self.project_selected.emit(project, section, rel_path)
             except Exception:
@@ -1240,26 +1255,6 @@ class ExplorerPanel(QWidget):
             event.ignore()
 
     # ---------------------
-    def on_item_clicked(self, item, column):
-
-        project = item.data(0, ROLE_PROJECT)
-        section = item.data(0, ROLE_SECTION)
-        rel_path = item.data(0, ROLE_REL_PATH)
-
-        if isinstance(project, Project):
-            self._update_project_card_selection(project)
-            if getattr(self, '_context', None) and getattr(self._context, 'inspector_panel', None):
-                try:
-                    self._context.inspector_panel.show_project(project)
-                except Exception:
-                    pass
-            self.project_selected.emit(project, section, rel_path)
-            return
-
-        # If the clicked entry is a top-level navigation (home, clients, assets_lib, knowledge, business),
-        # emit navigation_requested so the main app can handle module switching.
-        if section in ("home", "projects", "clients", "assets_lib", "knowledge", "business"):
-            try:
-                self.navigation_requested.emit(section)
-            except Exception:
-                pass
+    def on_item_clicked(self, item, column=0):
+        """Canonical tree item click handler. Delegates to _on_tree_item_clicked."""
+        self._on_tree_item_clicked(item, column)

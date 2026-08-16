@@ -238,7 +238,7 @@ class ActionTile(QFrame):
 class PinnedCard(QFrame):
     """Reorderable Home Pinned Card featuring content previews and drag & drop reordering."""
 
-    card_clicked = Signal(object, str, str)  # (project, board_id, node_id)
+    card_clicked = Signal(object)  # emits item_data dict
     card_reordered = Signal(str, str)  # (source_key, target_key)
 
     def __init__(self, item_data: dict, parent=None):
@@ -251,10 +251,15 @@ class PinnedCard(QFrame):
         p_obj = item_data.get("project")
         b_id = item_data.get("_board_id") or item_data.get("_board_name", "Main")
         n_id = item_data.get("id")
+        t_id = item_data.get("type", "node")
 
-        if item_data.get("type") == "project":
+        if t_id == "project":
             loc_str = str(p_obj.location) if p_obj else "unknown"
             self.key = f"proj::{loc_str}"
+        elif t_id == "knowledge":
+            self.key = f"know::{n_id}"
+        elif t_id == "library_asset":
+            self.key = f"lib::{n_id}"
         else:
             loc_str = str(p_obj.location) if p_obj else "__workbench__"
             self.key = f"{loc_str}::{b_id}::{n_id}"
@@ -288,10 +293,21 @@ class PinnedCard(QFrame):
         hdr_row.setSpacing(6)
 
         payload = item_data.get("payload", {}) if isinstance(item_data.get("payload"), dict) else {}
-        t_id = item_data.get("type", "node")
-        title = payload.get("title") or payload.get("filename") or t_id
+        title = payload.get("title") or payload.get("filename") or payload.get("name") or t_id
 
-        icon_prefix = "★ " if t_id == "project" else "📌 "
+        if t_id == "project":
+            icon_prefix = "📁 "
+        elif t_id == "knowledge":
+            icon_prefix = "📄 "
+        elif t_id == "library_asset":
+            icon_prefix = "📚 "
+        elif t_id in ("image", "image_preview"):
+            icon_prefix = "🖼️ "
+        elif t_id == "task":
+            icon_prefix = "☑️ "
+        else:
+            icon_prefix = "📌 "
+
         title_lbl = QLabel(f"{icon_prefix}{title}")
         title_lbl.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {TEXT_PRIMARY};")
         hdr_row.addWidget(title_lbl)
@@ -310,7 +326,7 @@ class PinnedCard(QFrame):
         layout.addLayout(hdr_row)
 
         # Body: Content Preview (1-3 lines snippet)
-        content = payload.get("content") or payload.get("text") or payload.get("caption") or ""
+        content = payload.get("content") or payload.get("text") or payload.get("caption") or payload.get("description") or ""
         preview_str = ""
         if content and isinstance(content, str):
             lines = [l.strip() for l in content.splitlines() if l.strip() and not l.strip().startswith("- [")]
@@ -326,7 +342,11 @@ class PinnedCard(QFrame):
 
         # Footer Badge: Source indicator
         if t_id == "project":
-            badge_str = f"⭐ Favorite Project"
+            badge_str = "⭐ Favorite Project"
+        elif t_id == "knowledge":
+            badge_str = "⭐ Favorite Note"
+        elif t_id == "library_asset":
+            badge_str = "📚 Library Asset"
         else:
             b_name = item_data.get("_board_name", "Main")
             if p_obj:
@@ -344,13 +364,7 @@ class PinnedCard(QFrame):
                 self._drag_start_pos = event.pos()
             super().mousePressEvent(event)
         else:
-            p_obj = self.item_data.get("project")
-            if self.item_data.get("type") == "project":
-                self.card_clicked.emit(p_obj, None, None)
-            else:
-                b_id = self.item_data.get("_board_id") or self.item_data.get("_board_name", "Main")
-                n_id = self.item_data.get("id")
-                self.card_clicked.emit(p_obj, b_id, n_id)
+            self.card_clicked.emit(self.item_data)
 
     def mouseMoveEvent(self, event):
         if not event or not (event.buttons() & Qt.LeftButton) or not self._drag_start_pos:
@@ -399,18 +413,11 @@ class PinnedCard(QFrame):
         self.dragLeaveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        p_obj = self.item_data.get("project")
-        if self.item_data.get("type") == "project":
-            b_id = None
-            n_id = None
-        else:
-            b_id = self.item_data.get("_board_id") or self.item_data.get("_board_name", "Main")
-            n_id = self.item_data.get("id")
         threshold = QApplication.startDragDistance() if QApplication.instance() else 10
         if not event or (event.button() == Qt.LeftButton and self._drag_start_pos and (event.pos() - self._drag_start_pos).manhattanLength() < threshold):
-            self.card_clicked.emit(p_obj, b_id, n_id)
+            self.card_clicked.emit(self.item_data)
         elif not event:
-            self.card_clicked.emit(p_obj, b_id, n_id)
+            self.card_clicked.emit(self.item_data)
         if event:
             super().mouseReleaseEvent(event)
 
@@ -991,11 +998,44 @@ class HomeWorkspacePanel(QWidget):
             except Exception:
                 pass
 
-    def _on_pinned_card_clicked(self, proj, board_id, node_id):
-        if proj and board_id is None and node_id is None:
-            self.open_recent_project.emit(proj)
+    def _on_pinned_card_clicked(self, item_data_or_proj, board_id=None, node_id=None):
+        if isinstance(item_data_or_proj, dict):
+            item_data = item_data_or_proj
+            wm = getattr(self._context, "workspace_manager", None) if self._context else None
+            t_type = item_data.get("type")
+
+            if t_type == "project":
+                p_obj = item_data.get("project")
+                if wm:
+                    from core.navigation import NavigationPayload
+                    wm.navigate(NavigationPayload.for_project(p_obj))
+                else:
+                    self.open_recent_project.emit(p_obj)
+            elif t_type == "knowledge":
+                doc_id = item_data.get("id")
+                if wm:
+                    from core.navigation import NavigationPayload
+                    wm.navigate(NavigationPayload.for_knowledge_doc(doc_id))
+            elif t_type == "library_asset":
+                asset_id = item_data.get("id")
+                if wm:
+                    from core.navigation import NavigationPayload
+                    wm.navigate(NavigationPayload.for_library_asset(asset_id))
+            else:
+                p_obj = item_data.get("project")
+                b_id = item_data.get("_board_id") or item_data.get("_board_name", "Main")
+                n_id = item_data.get("id")
+                if wm:
+                    from core.navigation import NavigationPayload
+                    wm.navigate(NavigationPayload.for_lab_node(n_id, board_id=b_id, project_or_name=p_obj))
+                else:
+                    self.open_board_requested.emit(p_obj, b_id, n_id)
         else:
-            self.open_board_requested.emit(proj, board_id, node_id)
+            proj = item_data_or_proj
+            if proj and board_id is None and node_id is None:
+                self.open_recent_project.emit(proj)
+            else:
+                self.open_board_requested.emit(proj, board_id, node_id)
 
     def _on_project_pin_toggled(self, project: Project):
         if not project or not self._context or not getattr(self._context, "project_service", None):
@@ -1123,6 +1163,46 @@ class HomeWorkspacePanel(QWidget):
                     "_board_name": None,
                 })
 
+        # Include Favorite Knowledge Notes
+        if hasattr(self._context, "knowledge_service") and self._context.knowledge_service:
+            try:
+                fav_docs = self._context.knowledge_service.list_documents(favorite_only=True)
+                for d in fav_docs:
+                    all_pinned.append({
+                        "id": d.id,
+                        "type": "knowledge",
+                        "project": None,
+                        "payload": {
+                            "title": d.title,
+                            "content": getattr(d, "content_preview", None) or (d.content[:120] if d.content else ""),
+                        },
+                        "_board_id": None,
+                        "_board_name": None,
+                    })
+            except Exception:
+                pass
+
+        # Include Favorite Library Assets
+        if hasattr(self._context, "library_service") and self._context.library_service:
+            try:
+                lib_svc = self._context.library_service
+                if hasattr(lib_svc, "get_favorite_assets"):
+                    fav_assets = lib_svc.get_favorite_assets()
+                    for a in fav_assets:
+                        all_pinned.append({
+                            "id": a.id if hasattr(a, "id") else a.get("id"),
+                            "type": "library_asset",
+                            "project": None,
+                            "payload": {
+                                "title": a.filename if hasattr(a, "filename") else a.get("filename", "Asset"),
+                                "content": "⭐ Favorite Library Asset",
+                            },
+                            "_board_id": None,
+                            "_board_name": None,
+                        })
+            except Exception:
+                pass
+
         if hasattr(self._context, "lab_service") and self._context.lab_service:
             lab_svc = self._context.lab_service
 
@@ -1189,8 +1269,13 @@ class HomeWorkspacePanel(QWidget):
                     key_map = {}
                     for pin in all_pinned:
                         p_obj = pin.get("project")
-                        if pin.get("type") == "project":
+                        t_id = pin.get("type")
+                        if t_id == "project":
                             k = f"proj::{p_obj.location}" if p_obj else "proj::unknown"
+                        elif t_id == "knowledge":
+                            k = f"know::{pin.get('id')}"
+                        elif t_id == "library_asset":
+                            k = f"lib::{pin.get('id')}"
                         else:
                             b_id = pin.get("_board_id") or pin.get("_board_name", "Main")
                             n_id = pin.get("id")
@@ -1557,9 +1642,14 @@ class HomeWorkspacePanel(QWidget):
         current_keys = []
         for pin in self._cached_pinned_items:
             p_obj = pin.get("project")
-            if pin.get("type") == "project":
+            t_id = pin.get("type")
+            if t_id == "project":
                 loc_str = str(p_obj.location) if p_obj else "unknown"
                 current_keys.append(f"proj::{loc_str}")
+            elif t_id == "knowledge":
+                current_keys.append(f"know::{pin.get('id')}")
+            elif t_id == "library_asset":
+                current_keys.append(f"lib::{pin.get('id')}")
             else:
                 b_id = pin.get("_board_id") or pin.get("_board_name", "Main")
                 n_id = pin.get("id")

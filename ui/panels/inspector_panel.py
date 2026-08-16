@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QScrollArea,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -33,9 +34,9 @@ class InspectorPanel(QWidget):
 
         self._context = None
         self._current_inspectable = None
+        self._pending_saves = {}
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
-        self._pending_save_action = None
         self._save_timer.timeout.connect(self._execute_pending_save)
 
         main_layout = QVBoxLayout(self)
@@ -82,7 +83,8 @@ class InspectorPanel(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
-        self.scroll_area.setStyleSheet("QScrollArea { background-color: #14161D; }")
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { background-color: #14161D; border: none; }")
 
         self.content_widget = QWidget()
         self.content_layout = QVBoxLayout(self.content_widget)
@@ -114,38 +116,57 @@ class InspectorPanel(QWidget):
                 context.client_service.client_deleted.connect(self._on_client_service_deleted)
             except Exception:
                 pass
-
-    def _execute_pending_save(self):
-        if self._pending_save_action:
-            action = self._pending_save_action
-            self._pending_save_action = None
+        if self._current_inspectable and isinstance(self._current_inspectable, ProjectInspectable):
             try:
-                action()
+                self._current_inspectable.project_service = getattr(context, 'project_service', None)
+                self._current_inspectable.client_service = getattr(context, 'client_service', None)
             except Exception:
                 pass
 
-    def _schedule_save(self, action):
-        self._pending_save_action = action
+    def _schedule_save(self, key, save_callable):
+        self._pending_saves[key] = save_callable
         self._save_timer.start(500)
 
+    def _execute_pending_save(self):
+        if self._pending_saves:
+            callbacks = list(self._pending_saves.values())
+            self._pending_saves.clear()
+            for cb in callbacks:
+                try:
+                    cb()
+                except Exception:
+                    pass
+
     def inspect(self, inspectable: InspectableObject):
+        self._execute_pending_save()
         self._current_inspectable = inspectable
 
         # Clear existing dynamic widgets
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
 
         if not inspectable:
             self.header_title.setText("Inspector")
+            self.header_title.setToolTip("")
             self.header_subtitle.setText("No object selected")
+            self.header_subtitle.setToolTip("")
             self.content_layout.addWidget(self.placeholder)
             self.placeholder.setVisible(True)
             return
 
-        self.header_title.setText(f"{inspectable.get_display_icon()}  {inspectable.get_display_name()}")
-        self.header_subtitle.setText(f"{inspectable.__class__.__name__.replace('Inspectable', '')} Properties")
+        display_name = inspectable.get_display_name()
+        display_icon = inspectable.get_display_icon()
+        title_text = f"{display_icon}  {display_name}"
+        self.header_title.setText(title_text)
+        self.header_title.setToolTip(title_text)
+
+        sub_text = f"{inspectable.__class__.__name__.replace('Inspectable', '')} Properties"
+        self.header_subtitle.setText(sub_text)
+        self.header_subtitle.setToolTip(sub_text)
 
         sections = inspectable.get_inspection_sections()
         for section in sections:
@@ -204,6 +225,7 @@ class InspectorPanel(QWidget):
             form_layout = QFormLayout()
             form_layout.setContentsMargins(0, 4, 0, 0)
             form_layout.setSpacing(8)
+            form_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
             for field in section.fields:
                 ctrl = self._create_control_for_field(inspectable, field)
@@ -270,16 +292,20 @@ class InspectorPanel(QWidget):
         self.inspect(inspectable)
 
     def show_asset(self, project, asset_id):
-        if not self._context or not getattr(self._context, "asset_service", None):
+        if not project or not asset_id:
             self.inspect(None)
             return
-        asset_dict = self._context.asset_service.get_asset(project, asset_id)
+        asset_svc = getattr(self._context, "asset_service", None) if self._context else None
+        if not asset_svc and hasattr(project, "asset_service"):
+            asset_svc = project.asset_service
+        if not asset_svc:
+            return
+        asset_dict = asset_svc.get_asset(project, asset_id)
         if not asset_dict:
-            self.inspect(None)
             return
         inspectable = AssetInspectable(
             asset_dict,
-            asset_service=self._context.asset_service,
+            asset_service=asset_svc,
             project=project,
         )
         self.inspect(inspectable)
@@ -297,10 +323,12 @@ class InspectorPanel(QWidget):
 
     def _create_control_for_field(self, inspectable: InspectableObject, field: InspectableField) -> QWidget:
         if field.field_type == "readonly" or field.read_only:
-            lbl = QLabel(str(field.value) if field.value is not None else "—")
+            val_str = str(field.value) if field.value is not None else "—"
+            lbl = QLabel(val_str)
             lbl.setWordWrap(True)
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             lbl.setStyleSheet("color: #CBD5E1;")
+            lbl.setToolTip(val_str)
             return lbl
 
         elif field.field_type in ("select", "enum"):
@@ -317,6 +345,7 @@ class InspectorPanel(QWidget):
                             break
                 if idx >= 0:
                     cb.setCurrentIndex(idx)
+            cb.setToolTip(str(field.value) if field.value else "")
             cb.currentTextChanged.connect(
                 lambda text, key=field.key: self._on_property_changed(inspectable, key, text)
             )
@@ -334,9 +363,12 @@ class InspectorPanel(QWidget):
             te = QTextEdit()
             te.setMinimumHeight(70)
             te.setMaximumHeight(130)
-            te.setPlainText(str(field.value) if field.value else "")
+            val_str = str(field.value) if field.value else ""
+            te.setPlainText(val_str)
+            te.setToolTip(val_str)
             te.textChanged.connect(
                 lambda key=field.key, widget=te: self._schedule_save(
+                    key,
                     lambda: self._on_property_changed(inspectable, key, widget.toPlainText())
                 )
             )
@@ -376,9 +408,12 @@ class InspectorPanel(QWidget):
         else:
             # Default "string" or "tags"
             le = QLineEdit()
-            le.setText(str(field.value) if field.value else "")
+            val_str = str(field.value) if field.value else ""
+            le.setText(val_str)
+            le.setToolTip(val_str)
             le.textChanged.connect(
                 lambda text, key=field.key: self._schedule_save(
+                    key,
                     lambda: self._on_property_changed(inspectable, key, text)
                 )
             )
@@ -389,7 +424,8 @@ class InspectorPanel(QWidget):
             return
         res = inspectable.set_inspectable_property(key, value)
         if res and hasattr(inspectable, "get_display_name"):
-            self.header_title.setText(f"{inspectable.get_display_icon()}  {inspectable.get_display_name()}")
+            if self._current_inspectable is inspectable:
+                self.header_title.setText(f"{inspectable.get_display_icon()}  {inspectable.get_display_name()}")
 
     def _request_change_cover(self, inspectable):
         if not isinstance(inspectable, ProjectInspectable) or not inspectable.project:
@@ -412,6 +448,66 @@ class InspectorPanel(QWidget):
         if getattr(inspectable, "project_service", None):
             inspectable.project_service.remove_snapshot(p)
             self.inspect(inspectable)
+
+    def show_project(self, project):
+        if not project:
+            self.inspect(None)
+            return
+        proj_svc = getattr(self._context, "project_service", None) if self._context else None
+        client_svc = getattr(self._context, "client_service", None) if self._context else None
+        lab_svc = getattr(self._context, "lab_service", None) if self._context else None
+        pcs_svc = getattr(self._context, "project_context_service", None) if self._context else None
+        inspectable = ProjectInspectable(
+            project,
+            project_service=proj_svc,
+            client_service=client_svc,
+            lab_service=lab_svc,
+            project_context_service=pcs_svc,
+            on_updated_callback=self._on_project_updated,
+        )
+        self.inspect(inspectable)
+
+    def show_asset(self, project, asset_id):
+        if not project or not asset_id or not self._context:
+            return
+        asset_svc = getattr(self._context, "asset_service", None)
+        if not asset_svc:
+            return
+        entry = asset_svc.get_asset(project, asset_id)
+        if not entry:
+            return
+        from core.inspectable_adapters import AssetInspectable
+        inspectable = AssetInspectable(entry, asset_service=asset_svc, project=project)
+        self.inspect(inspectable)
+
+    def show_library_asset(self, library_asset):
+        if not library_asset:
+            return
+        from core.inspectable_adapters import LibraryAssetInspectable
+        lib_svc = getattr(self._context, "library_service", None) if self._context else None
+        inspectable = LibraryAssetInspectable(library_asset, library_service=lib_svc, context=self._context)
+        self.inspect(inspectable)
+
+    def show_library_folder(self, folder_data):
+        if not folder_data:
+            return
+        from core.inspectable_adapters import LibraryFolderInspectable
+        lib_svc = getattr(self._context, "library_service", None) if self._context else None
+        inspectable = LibraryFolderInspectable(folder_data, library_service=lib_svc)
+        self.inspect(inspectable)
+
+    def show_knowledge_document(self, document):
+        if not document:
+            self.inspect(None)
+            return
+        from core.inspectable_adapters import KnowledgeDocumentInspectable
+        know_svc = getattr(self._context, "knowledge_service", None) if self._context else None
+        inspectable = KnowledgeDocumentInspectable(document, knowledge_service=know_svc, on_updated_callback=self._on_knowledge_document_updated)
+        self.inspect(inspectable)
+
+    def _on_knowledge_document_updated(self, document):
+        if self._current_inspectable and getattr(self._current_inspectable, "doc", None) == document:
+            self.header_title.setText(f"{self._current_inspectable.get_display_icon()}  {document.title}")
 
     def _on_project_updated(self, project):
         if self._current_inspectable and getattr(self._current_inspectable, "project", None) == project:

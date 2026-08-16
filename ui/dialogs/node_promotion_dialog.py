@@ -212,15 +212,10 @@ class NodePromotionDialog(QDialog):
         if self.project_service:
             try:
                 projects = sorted(self.project_service.all_projects(), key=lambda p: getattr(p, "name", "").lower())
-                p_names = [getattr(p, "name", "") for p in projects]
-                print(f"[NodePromotionDialog Diagnostics] project_service={id(self.project_service)} (type={type(self.project_service).__name__})")
-                print(f"[NodePromotionDialog Diagnostics] all_projects() returned {len(projects)} projects: {p_names}")
                 for p in projects:
                     self.project_cb.addItem(f"📁 {p.name}", p)
-            except Exception as err:
-                print(f"[NodePromotionDialog Diagnostics] Error calling all_projects(): {err}")
-        else:
-            print("[NodePromotionDialog Diagnostics] Warning: project_service is None!")
+            except Exception:
+                pass
 
         # Pre-select source project if currently inside a project
         if self.source_project:

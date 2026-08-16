@@ -8,12 +8,13 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
 )
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtCore import Qt, QByteArray
 
 from core.app_context import AppContext
 
 from ui.dialogs.new_project_dialog import NewProjectDialog
+from ui.dialogs.settings_dialog import SettingsDialog
 from ui.panels.explorer_panel import ExplorerPanel
 from ui.panels.workspace_panel import WorkspacePanel
 from ui.panels.inspector_panel import InspectorPanel
@@ -63,11 +64,22 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        self.settings_action = QAction("Settings...", self)
+        self.settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        self.settings_action.triggered.connect(lambda: self.open_settings("general"))
+        file_menu.addAction(self.settings_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        menubar.addMenu("&Edit")
+        edit_menu = menubar.addMenu("&Edit")
+        self.preferences_action = QAction("Preferences...", self)
+        self.preferences_action.triggered.connect(lambda: self.open_settings("general"))
+        edit_menu.addAction(self.preferences_action)
+
         menubar.addMenu("&View")
         tools_menu = menubar.addMenu("&Tools")
         menubar.addMenu("&Help")
@@ -76,6 +88,16 @@ class MainWindow(QMainWindow):
         self.rebuild_index_action = QAction("Rebuild Asset Index", self)
         self.rebuild_index_action.triggered.connect(self.rebuild_asset_index)
         tools_menu.addAction(self.rebuild_index_action)
+
+        # AI Settings action
+        self.ai_settings_action = QAction("AI Settings...", self)
+        self.ai_settings_action.triggered.connect(lambda: self.open_settings("ai"))
+        tools_menu.addAction(self.ai_settings_action)
+
+    def open_settings(self, section: str = "general"):
+        """Open the global Settings / Preferences dialog."""
+        dlg = SettingsDialog(context=self.context, parent=self, initial_section=section)
+        dlg.exec()
 
     def create_toolbar(self):
         toolbar = QToolBar("Main Toolbar")
@@ -111,6 +133,7 @@ class MainWindow(QMainWindow):
         self.context.main_window = self
         self.context.inspector_panel = self.inspector
         self.context.explorer_panel = self.explorer
+        self.context.open_settings = self.open_settings
         self.explorer.set_context(self.context)
         self.workspace.set_context(self.context)
 
@@ -138,7 +161,6 @@ class MainWindow(QMainWindow):
         try:
             if self.navigation_service:
                 self.explorer.navigation_requested.connect(self.navigation_service.handle_navigation)
-                self.explorer.project_selected.connect(lambda p, s, r=None: self.navigation_service.navigate_project(p, s, rel_path=r))
                 self.explorer.client_selected.connect(self.on_client_selected)
                 # attach Explorer's search services (global search)
                 try:
@@ -183,6 +205,26 @@ class MainWindow(QMainWindow):
         # connect asset selection from workspace to inspector
         try:
             self.workspace.asset_workspace.asset_selected.connect(self.on_asset_selected)
+        except Exception:
+            pass
+
+        # connect asset & folder selection from global library to inspector
+        try:
+            if getattr(self, "workspace_manager", None) and getattr(self.workspace_manager, "library_panel", None):
+                lp = self.workspace_manager.library_panel
+                if hasattr(lp, "asset_selected"):
+                    lp.asset_selected.connect(self.on_library_asset_selected)
+                if hasattr(lp, "folder_selected"):
+                    lp.folder_selected.connect(self.on_library_folder_selected)
+        except Exception:
+            pass
+
+        # connect knowledge document selection to inspector
+        try:
+            if getattr(self, "workspace_manager", None) and getattr(self.workspace_manager, "knowledge_panel", None):
+                kp = self.workspace_manager.knowledge_panel
+                if hasattr(kp, "document_selected"):
+                    kp.document_selected.connect(self.on_knowledge_document_selected)
         except Exception:
             pass
 
@@ -287,7 +329,10 @@ class MainWindow(QMainWindow):
 
     def on_asset_selected(self, asset_id):
         # Show asset metadata in inspector
-        if not self.context.current_project:
+        if not asset_id or not self.context.current_project:
+            return
+        asset_svc = getattr(self.context, "asset_service", None)
+        if asset_svc and not asset_svc.get_asset(self.context.current_project, asset_id):
             return
         try:
             self.inspector.show_asset(self.context.current_project, asset_id)
@@ -296,6 +341,31 @@ class MainWindow(QMainWindow):
         # update canonical app state so services can react (e.g., deletion clears inspector)
         try:
             self.context.app_state.set_current_asset(asset_id)
+        except Exception:
+            pass
+
+    def on_library_asset_selected(self, asset):
+        # Show global library asset metadata in inspector
+        if not asset:
+            return
+        try:
+            self.inspector.show_library_asset(asset)
+        except Exception:
+            pass
+
+    def on_library_folder_selected(self, folder_data):
+        # Show global library folder metadata in inspector
+        if not folder_data:
+            return
+        try:
+            self.inspector.show_library_folder(folder_data)
+        except Exception:
+            pass
+
+    def on_knowledge_document_selected(self, document):
+        # Show knowledge document metadata in inspector
+        try:
+            self.inspector.show_knowledge_document(document)
         except Exception:
             pass
 
@@ -517,8 +587,21 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # Sync explorer selection without re-emitting signals
+        try:
+            if hasattr(self, "explorer") and self.explorer:
+                self.explorer.reveal_project(project, section, rel_path=rel_path, emit=False)
+        except Exception:
+            pass
+
         # Delegate to workspace to display the appropriate view
         self.workspace.show_section(project, section, rel_path=rel_path)
+
+        if getattr(self, "navigation_service", None):
+            try:
+                self.navigation_service.navigate_to_project.emit(project, section)
+            except Exception:
+                pass
 
 
     def register_and_open_project(self, project, client_id=None, section="dashboard"):

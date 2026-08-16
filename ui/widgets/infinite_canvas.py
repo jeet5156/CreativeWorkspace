@@ -297,9 +297,7 @@ class InfiniteCanvas(QGraphicsView):
                     dx = scene_pos.x() - anchor_pos.x()
                     dy = scene_pos.y() - anchor_pos.y()
                     dist = math.hypot(dx, dy)
-                    print(f"[TRACE] Stage 1 & 2: Anchor hit test dist={dist:.1f}px for anchor '{anchor_id}' on node {node.id}")
                     if dist <= 24.0:  # 24px hit radius for anchor ports
-                        print(f"[TRACE] Stage 2: Begin connection drag from node {node.id} anchor '{anchor_id}'")
                         self.start_connection_drag(node, source_anchor=anchor_id, mouse_scene_pos=scene_pos)
                         event.accept()
                         return
@@ -308,7 +306,6 @@ class InfiniteCanvas(QGraphicsView):
         scene_pos = self.mapToScene(event.pos())
         self.cursor_position_changed.emit(scene_pos.x(), scene_pos.y())
         if self._drag_connection_start_node:
-            print(f"[TRACE] Stage 3: Mouse move preview update to scene pos ({scene_pos.x():.1f}, {scene_pos.y():.1f})")
             self.update_connection_drag(scene_pos)
             event.accept()
             return
@@ -356,10 +353,8 @@ class InfiniteCanvas(QGraphicsView):
                     a_id, _ = target_node.get_closest_anchor(scene_pos)
                     if a_id:
                         tgt_anchor = a_id
-                print(f"[TRACE] Stage 4: Mouse release target node detected: {target_node.id} anchor '{tgt_anchor}'")
                 self.finish_connection_drag(target_node, target_anchor=tgt_anchor)
             else:
-                print("[TRACE] Mouse release without valid target node -> cancelling drag")
                 self.cancel_connection_drag()
             event.accept()
             return
@@ -1323,18 +1318,13 @@ class InfiniteCanvas(QGraphicsView):
                             del self._connector_map[conn_id]
                     QMessageBox.information(self, "Nodes Moved", f"{dialog_title} to {dest_name}.")
                 else:
-                    print(f"[DIAG 2 FAILURE]: move_nodes returned []!")
                     QMessageBox.critical(self, "Move Failed", f"Could not move selected nodes to target board.")
             else:
                 res_items = lab_svc.copy_nodes(source_project, source_board_id, p_target, b_id_target, target_node_ids)
                 if res_items:
                     QMessageBox.information(self, "Nodes Copied", f"{dialog_title} to {dest_name}.")
                 else:
-                    print(f"[DIAG 2 FAILURE]: copy_nodes returned []!")
                     QMessageBox.critical(self, "Copy Failed", f"Could not copy selected nodes to target board.")
         except Exception as err:
-            import traceback
-            print(f"[DIAG 5 EXCEPTION IN CANVAS PROMOTION]: {err}")
-            traceback.print_exc()
-            raise
+            QMessageBox.critical(self, "Error", f"Failed to promote nodes: {err}")
     _prompt_promote_node = _prompt_promote_nodes

@@ -92,7 +92,7 @@ class WorkspacePanel(QWidget):
         except Exception:
             pass
 
-    def show_section(self, project, section, rel_path=None):
+    def show_section(self, project, section, rel_path=None, force_reload=False):
         """Show dashboard when section is 'dashboard'; otherwise the workspace view for that section.
         Reset state when switching projects so dashboard is always shown for project root.
         """
@@ -103,7 +103,8 @@ class WorkspacePanel(QWidget):
             return
 
         # Reset state when switching projects
-        if not self._current_project or project.location != self._current_project.location:
+        project_changed = not self._current_project or project.location != self._current_project.location
+        if project_changed:
             # new project -> reset internal state
             self._current_project = project
             self._current_section = None
@@ -112,6 +113,7 @@ class WorkspacePanel(QWidget):
             except Exception:
                 pass
 
+        same_section = (not project_changed) and (self._current_section == section)
         self._current_project = project
         self._current_section = section
 
@@ -122,11 +124,15 @@ class WorkspacePanel(QWidget):
             pass
 
         if section == "dashboard":
+            if same_section and self.stack.currentWidget() == self.dashboard:
+                return
             self.dashboard.show_project(project)
             self.stack.setCurrentWidget(self.dashboard)
             return
 
         if section == "notes":
+            if same_section and self.stack.currentWidget() == self.notes:
+                return
             self.notes.show_project(project)
             self.stack.setCurrentWidget(self.notes)
             return
@@ -140,6 +146,12 @@ class WorkspacePanel(QWidget):
                     return
 
         # For assets/references/renders/exports show the asset workspace
+        if not force_reload and same_section and self.stack.currentWidget() == self.asset_workspace:
+            target_rel = rel_path or getattr(self.asset_workspace, '_current_rel_path', None)
+            curr_rel = getattr(self.asset_workspace, '_current_rel_path', None)
+            if target_rel and curr_rel and target_rel.replace('\\', '/').strip('/') == curr_rel.replace('\\', '/').strip('/'):
+                return
+
         self.asset_workspace.show_project_section(project, section, self._context, rel_path=rel_path)
         self.stack.setCurrentWidget(self.asset_workspace)
 
@@ -149,13 +161,13 @@ class WorkspacePanel(QWidget):
             return
         if project.location != self._current_project.location:
             return
-        # Map category names to section keys: category stored as 'Assets' or 'References'
-        section = self._current_section
+        section = str(self._current_section or '').lower()
+        cat_str = str(category or '').lower()
         # If no category filter (None or empty string) or it matches current section, refresh
-        if not category or category.lower() == str(section).lower() or (section == 'assets' and category == 'Assets'):
-            # refresh current view preserving active relative path subfolder
+        if not category or cat_str == section:
+            # refresh current view preserving active relative path subfolder and selection
             active_rel = getattr(self.asset_workspace, '_current_rel_path', None)
-            self.show_section(self._current_project, self._current_section, rel_path=active_rel)
+            self.show_section(self._current_project, self._current_section, rel_path=active_rel, force_reload=True)
 
     # ---------------------
     # Drag & Drop on the workspace

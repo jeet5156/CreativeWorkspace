@@ -12,18 +12,24 @@ def log_debug(msg: str):
     pass
 
 
-class _ThumbWorker(QRunnable):
-    def __init__(self, service, project_location, rel_path, src_path, thumb_path, size, asset_id):
+SUPPORTED_THUMB_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".tga", ".exr", ".hdr", ".ico"}
+
+
+class ThumbnailWorker(QRunnable):
+    """Background worker task for decoding and scaling a single thumbnail."""
+
+    def __init__(self, project_location: str, rel_path: str, src_path: Path, thumb_path: Path, size: QSize, asset_id: str, service):
         super().__init__()
-        self.service = service
         self.project_location = project_location
         self.rel_path = rel_path
         self.src_path = src_path
         self.thumb_path = thumb_path
         self.size = size
         self.asset_id = asset_id
+        self.service = service
 
     def run(self):
+        reader = None
         try:
             log_debug(f"[THUMB] worker started: src_path={self.src_path}, asset_id={self.asset_id}")
             reader = QImageReader(str(self.src_path))
@@ -78,6 +84,14 @@ class _ThumbWorker(QRunnable):
                 pass
         finally:
             try:
+                if 'reader' in locals() and reader:
+                    if reader.device():
+                        reader.device().close()
+                    del reader
+                    reader = None
+            except Exception:
+                pass
+            try:
                 key = (str(self.project_location), str(self.rel_path))
                 if key in self.service._queued:
                     self.service._queued.discard(key)
@@ -117,11 +131,16 @@ class ThumbnailService(QObject):
         self._pixmap_cache = {}    # thumb_path -> QPixmap
 
     def _thumb_folder(self, project_location: str) -> Path:
-        p = Path(project_location) / ".creativeworkspace" / "thumbnails"
+        if project_location == "__global_library__" or not project_location:
+            p = Path.home() / ".creativeworkspace" / "library" / "thumbnails"
+        else:
+            p = Path(project_location) / ".creativeworkspace" / "thumbnails"
         p.mkdir(parents=True, exist_ok=True)
         return p
 
     def _index_file(self, project_location: str) -> Path:
+        if project_location == "__global_library__" or not project_location:
+            return Path.home() / ".creativeworkspace" / "library" / "thumbnails" / "index.json"
         return Path(project_location) / ".creativeworkspace" / "thumbnails" / "index.json"
 
     def _load_index(self, project_location: str) -> dict:
@@ -187,12 +206,17 @@ class ThumbnailService(QObject):
             thumb = Path(entry.get("thumb"))
             if not thumb.exists():
                 return None
+
+            # If source file does not exist (e.g. offline drive), preserve cached thumbnail!
+            if not src_path or not Path(src_path).exists():
+                return str(thumb)
+
             try:
                 src_mtime = os.path.getmtime(src_path)
                 if abs(float(entry.get("mtime", 0)) - float(src_mtime)) > 0.01:
                     return None
             except Exception:
-                return None
+                return str(thumb)
             return str(thumb)
         except Exception:
             return None
@@ -215,6 +239,11 @@ class ThumbnailService(QObject):
             reader = QImageReader(norm_path)
             reader.setAutoTransform(True)
             img = reader.read()
+            try:
+                if reader.device():
+                    reader.device().close()
+            except Exception:
+                pass
             if img and not img.isNull():
                 pix = QPixmap.fromImage(img)
                 if not pix or pix.isNull():
@@ -234,6 +263,9 @@ class ThumbnailService(QObject):
     def generate_async(self, project_location: str, rel_path: str, src_path: str, size, asset_id: str):
         """Start background generation if not queued or cached. Returns True if generation queued or already exists."""
         try:
+            if not src_path or Path(src_path).suffix.lower() not in SUPPORTED_THUMB_EXTS:
+                return False
+
             stack = traceback.extract_stack()
             caller = stack[-2] if len(stack) >= 2 else None
             caller_str = f"{Path(caller.filename).name}:{caller.lineno} in {caller.name}" if caller else "unknown"
@@ -274,7 +306,7 @@ class ThumbnailService(QObject):
             thumb_path = thumb_dir / name
 
             # queue worker
-            worker = _ThumbWorker(self, project_location, rel_path, src_path, thumb_path, size, asset_id)
+            worker = ThumbnailWorker(project_location, rel_path, Path(src_path), thumb_path, size, asset_id, self)
             self._queued.add(key)
 
             # Submit to pool

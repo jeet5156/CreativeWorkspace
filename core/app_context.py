@@ -61,6 +61,91 @@ class AppContext:
         except Exception:
             self.asset_operations = None
 
+        # Global Asset Library & Drive Detection
+        try:
+            from services.drive_detection_service import DriveDetectionService
+            from services.library_service import LibraryService
+            self.drive_detection_service = DriveDetectionService()
+            self.library_service = LibraryService(drive_detector=self.drive_detection_service)
+        except Exception:
+            self.drive_detection_service = None
+            self.library_service = None
+
+        # Knowledge Service
+        try:
+            from services.knowledge_service import KnowledgeService
+            self.knowledge_service = KnowledgeService()
+        except Exception:
+            self.knowledge_service = None
+
+        # AI Service
+        try:
+            from services.ai_service import AIService
+            self.ai_service = AIService()
+        except Exception:
+            self.ai_service = None
+
+        # AI Context Retrieval Service (Metadata & Index-Based)
+        try:
+            from services.context_retrieval_service import ContextRetrievalService
+            self.context_retrieval_service = ContextRetrievalService(
+                context=self,
+                knowledge_service=self.knowledge_service,
+                library_service=self.library_service,
+                asset_service=self.asset_service,
+                project_service=self.project_service,
+                lab_service=self.lab_service,
+            )
+        except Exception:
+            self.context_retrieval_service = None
+
+        # Knowledge AI Service
+        try:
+            from services.knowledge_ai_service import KnowledgeAIService
+            self.knowledge_ai_service = KnowledgeAIService(
+                self.ai_service,
+                self.knowledge_service,
+                context_retrieval_service=self.context_retrieval_service,
+            )
+        except Exception:
+            self.knowledge_ai_service = None
+
+        # Knowledge AI Assistant Service (Interactive Q&A)
+        try:
+            from services.knowledge_assistant_service import KnowledgeAssistantService
+            self.knowledge_assistant_service = KnowledgeAssistantService(
+                self.ai_service,
+                self.knowledge_service,
+                context_retrieval_service=self.context_retrieval_service,
+            )
+        except Exception:
+            self.knowledge_assistant_service = None
+
+        # Project Context Service (Structured Project Context & Metrics Aggregation)
+        try:
+            from services.project_context_service import ProjectContextService
+            self.project_context_service = ProjectContextService(
+                context=self,
+                project_service=self.project_service,
+                asset_service=self.asset_service,
+                library_service=self.library_service,
+                knowledge_service=self.knowledge_service,
+                lab_service=self.lab_service,
+            )
+        except Exception:
+            self.project_context_service = None
+
+        # Project AI Assistant Service (Phase 5B)
+        try:
+            from services.project_assistant_service import ProjectAssistantService
+            self.project_assistant_service = ProjectAssistantService(
+                ai_service=self.ai_service,
+                project_context_service=self.project_context_service,
+                context=self,
+            )
+        except Exception:
+            self.project_assistant_service = None
+
         self.current_project = None
 
     def set_current_project(self, project):

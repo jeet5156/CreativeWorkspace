@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QFontMetrics
 from pathlib import Path
 from datetime import datetime
 
@@ -21,49 +21,192 @@ class AssetCard(QWidget):
         '.doc': '📄',
         '.docx': '📄',
         '.txt': '📄',
-        '.csv': '📄',
+        '.md': '📝',
+        '.csv': '📊',
         '.mp3': '🎵',
         '.wav': '🎵',
+        '.flac': '🎵',
         '.mp4': '🎞️',
         '.mov': '🎞️',
+        '.avi': '🎞️',
+        '.mkv': '🎞️',
         '.fbx': '🧩',
         '.obj': '🧩',
+        '.blend': '🧩',
+        '.gltf': '🧩',
+        '.glb': '🧩',
+        '.usd': '🧩',
+        '.usda': '🧩',
+        '.usdc': '🧩',
+        '.usdz': '🧩',
+        '.abc': '🧩',
+        '.stl': '🧩',
+        '.dae': '🧩',
+        '.exr': '🎬',
+        '.hdr': '🎬',
+        '.tga': '🖼️',
+        '.tif': '🖼️',
+        '.tiff': '🖼️',
+        '.sbsar': '🎨',
+        '.sbs': '🎨',
+        '.zip': '📦',
+        '.rar': '📦',
+        '.7z': '📦',
     }
 
-    def __init__(self, asset: dict, size: QSize, thumbnail_service=None, project_location: str = None):
+    def __init__(self, asset: dict, size: QSize = None, thumbnail_service=None, project_location: str = None):
         super().__init__()
         self.asset = asset
         self._selected = False
-        self.setFixedSize(size)
+        card_size = size or QSize(150, 185)
+        self._size = card_size
+        self.setFixedSize(card_size)
         self._thumb_service = thumbnail_service
         self._project_location = project_location
-        self._size = size
+
+        # Default styling
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._default_style = (
+            "AssetCard {"
+            "  background-color: #1E2130;"
+            "  border: 1px solid #2E334D;"
+            "  border-radius: 8px;"
+            "}"
+            "AssetCard:hover {"
+            "  background-color: #24293D;"
+            "  border: 1px solid #434B70;"
+            "}"
+            "QToolTip {"
+            "  background-color: #202334;"
+            "  color: #F1F5F9;"
+            "  border: 1px solid #3B4261;"
+            "  border-radius: 4px;"
+            "  padding: 4px 8px;"
+            "  font-size: 11px;"
+            "}"
+        )
+        self._selected_style = (
+            "AssetCard {"
+            "  background-color: #2B3356;"
+            "  border: 2px solid #6366F1;"
+            "  border-radius: 8px;"
+            "}"
+            "AssetCard:hover {"
+            "  background-color: #303960;"
+            "  border: 2px solid #818CF8;"
+            "}"
+            "QToolTip {"
+            "  background-color: #202334;"
+            "  color: #F1F5F9;"
+            "  border: 1px solid #3B4261;"
+            "  border-radius: 4px;"
+            "  padding: 4px 8px;"
+            "  font-size: 11px;"
+            "}"
+        )
+        self.setStyleSheet(self._default_style)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
 
+        # 1. Thumbnail container
+        thumb_w = card_size.width() - 16
+        thumb_h = max(60, card_size.height() - 85)
         self.thumb = QLabel()
-        self.thumb.setFixedSize(size.width() - 12, size.height() - 74)
-        self.thumb.setStyleSheet("background:#f0f0f0;border:1px solid #ddd;")
+        self.thumb.setFixedSize(thumb_w, thumb_h)
+        self.thumb.setStyleSheet(
+            "background-color: #141622;"
+            "border: 1px solid #24283E;"
+            "border-radius: 6px;"
+            "color: #94A3B8;"
+            "font-size: 24px;"
+        )
         self.thumb.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.thumb)
 
-        self.name = QLabel(asset.get('filename', ''))
-        self.name.setWordWrap(True)
-        self.name.setFixedHeight(30)
+        # 2. Filename (elided text truncation)
+        raw_filename = asset.get('filename', '')
+        self.name = QLabel()
+        self.name.setFixedHeight(20)
+        self.name.setStyleSheet("color: #F1F5F9; font-size: 11px; font-weight: 600; background: transparent;")
+        self.name.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._full_filename = raw_filename
+        self.set_filename(raw_filename)
         layout.addWidget(self.name)
 
-        self.meta = QLabel(f"{asset.get('friendly_type','')} • {asset.get('category','')}")
-        self.meta.setStyleSheet("color:#666;font-size:11px;")
+        # 3. Meta info (type / category / version / LOD / sequence)
+        friendly_type = asset.get('friendly_type', '')
+        category = asset.get('category', '')
+        version = asset.get('version')
+        lod = asset.get('lod')
+        is_sequence = asset.get('is_sequence', False)
+
+        meta_parts = []
+        is_lib_ref = bool(asset.get('is_library_reference'))
+        if is_lib_ref:
+            meta_parts.append("🔗 Library")
+
+        if is_sequence:
+            meta_parts.append(f"🎞️ {asset.get('frame_count', 0)} frames")
+            if version:
+                meta_parts.append(version.upper())
+        else:
+            if friendly_type:
+                meta_parts.append(friendly_type)
+            if version:
+                meta_parts.append(version.upper())
+            if lod:
+                meta_parts.append(lod.upper())
+            elif category and not version and not is_lib_ref:
+                meta_parts.append(category)
+
+        avail = asset.get('availability')
+        if avail:
+            if avail in ("Offline", "offline"):
+                meta_parts.append("⚠️ Offline")
+            elif avail in ("Missing", "missing"):
+                meta_parts.append("❌ Missing")
+            elif avail in ("Possibly Changed", "possibly_changed"):
+                meta_parts.append("🔄 Changed")
+
+        meta_str = " • ".join(meta_parts) if meta_parts else (friendly_type or "File")
+        self.meta = QLabel(meta_str)
+        self.meta.setFixedHeight(16)
+        self.meta.setStyleSheet("color: #94A3B8; font-size: 10px; background: transparent;")
         layout.addWidget(self.meta)
 
-        # friendly date label
-        self.date_label = QLabel(self._format_friendly_date(asset.get('date_added')))
-        self.date_label.setStyleSheet("color:#888;font-size:11px;")
+        # 4. Friendly date label
+        self.date_label = QLabel(self._format_friendly_date(asset.get('date_added') or asset.get('created_at')))
+        self.date_label.setFixedHeight(14)
+        self.date_label.setStyleSheet("color: #64748B; font-size: 10px; background: transparent;")
         layout.addWidget(self.date_label)
 
-        # connect to thumbnail ready signal so we can update when generation completes
+        # Full tooltip
+        tooltip_lines = [raw_filename]
+        if is_lib_ref:
+            tooltip_lines.append("Source: 📚 Global Asset Library Reference")
+        if is_sequence:
+            tooltip_lines.append(f"Type: {friendly_type} ({asset.get('frame_range', '')})")
+            if version:
+                tooltip_lines.append(f"Version: {version.upper()}")
+        else:
+            tooltip_lines.append(f"Type: {friendly_type or 'File'}")
+            if version:
+                tooltip_lines.append(f"Version: {version.upper()}")
+            if lod:
+                tooltip_lines.append(f"LOD: {lod.upper()}")
+        if category:
+            tooltip_lines.append(f"Category: {category}")
+        if asset.get('drive_name'):
+            tooltip_lines.append(f"Drive: {asset.get('drive_name')}")
+        if asset.get('drive_relative_path'):
+            tooltip_lines.append(f"Drive Path: {asset.get('drive_relative_path')}")
+        if avail:
+            tooltip_lines.append(f"Availability: {avail}")
+        self.setToolTip("\n".join(tooltip_lines))
+
+        # Connect to thumbnail service
         try:
             if self._thumb_service:
                 self._thumb_service.thumbnail_ready.connect(self._on_thumbnail_ready)
@@ -72,13 +215,22 @@ class AssetCard(QWidget):
 
         self._load_thumbnail()
 
+    def set_filename(self, filename: str):
+        """Set filename with middle elision to keep layout strictly fixed."""
+        self._full_filename = filename
+        fm = QFontMetrics(self.name.font())
+        avail_w = max(40, self._size.width() - 20)
+        elided = fm.elidedText(filename, Qt.ElideMiddle, avail_w)
+        self.name.setText(elided)
+        self.name.setToolTip(filename)
+
     def _format_friendly_date(self, iso_str: str) -> str:
         if not iso_str:
             return ""
         try:
             dt = datetime.fromisoformat(iso_str)
         except Exception:
-            return iso_str
+            return str(iso_str)
         today = datetime.now()
         delta = today.date() - dt.date()
         days = delta.days
@@ -86,7 +238,7 @@ class AssetCard(QWidget):
             return "Today"
         if days == 1:
             return "Yesterday"
-        if days < 7:
+        if 0 < days < 7:
             return f"{days} days ago"
         return dt.strftime("%d %b %Y")
 
@@ -98,7 +250,6 @@ class AssetCard(QWidget):
         if abs_path_str:
             abs_path = Path(abs_path_str)
         else:
-            # Prefer resolving relative paths against the project's canonical root if available.
             if self._project_location:
                 abs_path = Path(self._project_location) / (rel_path or '')
             else:
@@ -106,10 +257,15 @@ class AssetCard(QWidget):
 
         # Ask thumbnail service for cached thumbnail first
         try:
-            if self._thumb_service and self._project_location:
-                cached = self._thumb_service.get_cached(self._project_location, rel_path, str(abs_path))
+            if self._thumb_service:
+                proj_loc = self._project_location or "__global_library__"
+                thumb_rel_key = rel_path or self.asset.get('drive_relative_path') or self.asset.get('id') or str(abs_path)
+                cached = self._thumb_service.get_cached(proj_loc, str(thumb_rel_key), str(abs_path))
+                if not cached and self.asset.get('is_library_reference'):
+                    cached = self._thumb_service.get_cached("__global_library__", str(self.asset.get('drive_relative_path') or thumb_rel_key), str(abs_path))
                 if cached == "FAILED":
-                    return  # Fast fallback to placeholder icon; do not retry failed thumbnails
+                    self._show_fallback_icon(ext)
+                    return
                 if cached:
                     try:
                         pix = self._thumb_service.get_cached_pixmap(cached) if hasattr(self._thumb_service, "get_cached_pixmap") else QPixmap(cached)
@@ -119,14 +275,15 @@ class AssetCard(QWidget):
                     except Exception:
                         pass
                 # if not cached, request async generation and fall through to placeholder
-                try:
-                    self._thumb_service.generate_async(self._project_location, rel_path, str(abs_path), self._thumb_size_or_default(), self.asset.get('id'))
-                except Exception:
-                    pass
+                if abs_path and abs_path.exists():
+                    try:
+                        self._thumb_service.generate_async(proj_loc, str(thumb_rel_key), str(abs_path), self._thumb_size_or_default(), self.asset.get('id'))
+                    except Exception:
+                        pass
         except Exception:
             pass
 
-        # Fallback: image types may still be displayed directly (fast path) if available
+        # Fallback: image types direct display
         if ext in {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}:
             if abs_path.exists():
                 try:
@@ -137,18 +294,21 @@ class AssetCard(QWidget):
                 except Exception:
                     pass
 
-        # Non-image: show an icon if available, otherwise extension text as placeholder
+        self._show_fallback_icon(ext)
+
+    def _show_fallback_icon(self, ext: str):
         icon = self.ICON_MAP.get(ext)
         if icon:
             self.thumb.setText(icon)
-            return
-        self.thumb.setText(ext.upper().lstrip('.') or 'FILE')
+        else:
+            clean_ext = ext.upper().lstrip('.') or 'FILE'
+            self.thumb.setText(clean_ext)
 
     def _thumb_size_or_default(self):
         try:
             return self._size
         except Exception:
-            return QSize(140, 160)
+            return QSize(150, 185)
 
     def _on_thumbnail_ready(self, asset_id: str, thumb_path: str):
         try:
@@ -165,8 +325,6 @@ class AssetCard(QWidget):
             self._drag_start_pos = event.pos()
             self.clicked.emit(self.asset.get('id'))
         else:
-            # Let contextMenuEvent handle right-click/context menus to avoid menu dismissal when
-            # selection logic triggers UI changes during mouse press.
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -202,15 +360,10 @@ class AssetCard(QWidget):
             pass
 
     def contextMenuEvent(self, event):
-        """Emit context_requested when the OS/context menu is requested. This ensures
-        the menu is shown from contextMenuEvent, not mousePressEvent, preventing
-        transient menus from closing if selection triggers minor UI updates.
-        """
         try:
             self.context_requested.emit(self.asset.get('id'))
         except Exception:
             pass
-        # Accept the event so default handling doesn't also run
         try:
             event.accept()
         except Exception:
@@ -223,6 +376,20 @@ class AssetCard(QWidget):
     def set_selected(self, selected: bool):
         self._selected = selected
         if selected:
-            self.setStyleSheet('background:#e6f0ff;border:1px solid #7aa7ff;')
+            self.setStyleSheet(self._selected_style)
+            self.thumb.setStyleSheet(
+                "background-color: #1A1E36;"
+                "border: 1px solid #6366F1;"
+                "border-radius: 6px;"
+                "color: #C7D2FE;"
+                "font-size: 24px;"
+            )
         else:
-            self.setStyleSheet('')
+            self.setStyleSheet(self._default_style)
+            self.thumb.setStyleSheet(
+                "background-color: #141622;"
+                "border: 1px solid #24283E;"
+                "border-radius: 6px;"
+                "color: #94A3B8;"
+                "font-size: 24px;"
+            )

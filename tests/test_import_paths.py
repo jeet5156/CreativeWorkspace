@@ -118,8 +118,8 @@ class TestImportPaths(unittest.TestCase):
         self.assertEqual(len(report["errors"]), 0)
 
         # Physical destination verification
-        file1_path = Path(self.project_dir) / "Assets" / "Hero" / "model_mesh.obj"
-        file2_path = Path(self.project_dir) / "Assets" / "Hero" / "texture_skin.png"
+        file1_path = Path(self.project_dir) / "Assets" / "Hero" / "HeroAssets" / "model_mesh.obj"
+        file2_path = Path(self.project_dir) / "Assets" / "Hero" / "HeroAssets" / "texture_skin.png"
         self.assertTrue(file1_path.exists())
         self.assertTrue(file2_path.exists())
 

@@ -53,7 +53,11 @@ class AssetOperationsService(QObject):
         self.thumbnail_service = thumbnail_service
 
     def _get_entry(self, project, asset_id):
-        return self.asset_service.get_asset(project, asset_id)
+        entry = self.asset_service.get_asset(project, asset_id)
+        if not entry and str(asset_id).startswith("seq_"):
+            real_id = str(asset_id)[4:]
+            entry = self.asset_service.get_asset(project, real_id)
+        return entry
 
     def rename_asset(self, project, asset_id, new_name):
         entry = self._get_entry(project, asset_id)
@@ -99,10 +103,22 @@ class AssetOperationsService(QObject):
                     pass
                 # If the deleted asset was the current asset in app state, clear it so Inspector updates
                 try:
-                    if self.app_state and getattr(self.app_state, 'current_asset', None) == asset_id:
+                    if self.app_state and self.app_state.get_current_asset() == asset_id:
                         self.app_state.set_current_asset(None)
                 except Exception:
                     pass
+            return res
+        except Exception:
+            return False
+
+    def delete_assets(self, project, asset_ids: list):
+        if not asset_ids:
+            return True
+        try:
+            if hasattr(self.asset_service, "delete_assets"):
+                res = self.asset_service.delete_assets(project, asset_ids)
+            else:
+                res = all(self.delete_asset(project, aid) for aid in asset_ids)
             return res
         except Exception:
             return False

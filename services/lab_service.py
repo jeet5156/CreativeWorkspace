@@ -742,39 +742,6 @@ class LabService(QObject):
         source_items = source_board.get("items", [])
         item_map = {item.get("id"): item for item in source_items if isinstance(item, dict) and item.get("id")}
         present_ids = [nid for nid in node_ids if nid in item_map]
-        print("\n--- E2E DIAGNOSTIC: LabService.resolve_promotion_group ---", flush=True)
-        print(f"source_project.location: {getattr(source_project, 'location', None)}", flush=True)
-        print(f"source_board_id: {source_board_id}", flush=True)
-        print(f"resolved board entry: {src_entry}", flush=True)
-        print(f"resolved board filename: {canon_src_id}.lab.json", flush=True)
-        print(f"board file path: {board_file}", flush=True)
-        print(f"node IDs requested: {node_ids}", flush=True)
-        print(f"node IDs actually present in that file: {present_ids}", flush=True)
-        for nid in node_ids:
-            if nid not in item_map:
-                print(f"\n[UNRESOLVED NODE LOCATION SEARCH: {nid}]", flush=True)
-                in_curr = nid in item_map
-                print(f"  - Exists in current board file ({canon_src_id}.lab.json)? {in_curr}", flush=True)
-                in_other_boards = []
-                try:
-                    for b in self.list_boards(source_project):
-                        b_items = self.load_items(source_project, b.get("id"))
-                        if any(isinstance(it, dict) and it.get("id") == nid for it in b_items):
-                            in_other_boards.append((b.get("id"), b.get("name")))
-                except Exception:
-                    pass
-                print(f"  - Exists in another board of project '{getattr(source_project, 'name', None)}'? {in_other_boards if in_other_boards else 'No'}", flush=True)
-                in_wb = []
-                try:
-                    for b in self.list_boards(None):
-                        b_items = self.load_items(None, b.get("id"))
-                        if any(isinstance(it, dict) and it.get("id") == nid for it in b_items):
-                            in_wb.append((b.get("id"), b.get("name")))
-                except Exception:
-                    pass
-                print(f"  - Exists in Workbench? {in_wb if in_wb else 'No'}", flush=True)
-                if not in_curr and not in_other_boards and not in_wb:
-                    print(f"  - Exists NOWHERE on disk!", flush=True)
         resolved_ids = set()
         queue = [nid for nid in node_ids if nid in item_map]
         while queue:

@@ -54,4 +54,13 @@ QTreeWidget {{
 QLabel {{
     color: {TEXT_PRIMARY};
 }}
-"""
+
+QToolTip {{
+    background-color: {CARD_BG};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER_COLOR};
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}}
+"""

@@ -7,11 +7,12 @@ from core.inspectable import InspectableObject, InspectableSection, InspectableF
 class ProjectInspectable(InspectableObject):
     """Adapter wrapping Project model into the InspectableObject contract."""
 
-    def __init__(self, project, project_service=None, client_service=None, lab_service=None, on_updated_callback=None):
+    def __init__(self, project, project_service=None, client_service=None, lab_service=None, project_context_service=None, on_updated_callback=None):
         self.project = project
         self.project_service = project_service
         self.client_service = client_service
         self.lab_service = lab_service
+        self.project_context_service = project_context_service
         self.on_updated_callback = on_updated_callback
 
     def get_display_name(self) -> str:
@@ -74,13 +75,28 @@ class ProjectInspectable(InspectableObject):
             InspectableField("deadline", "Deadline", "string", value=getattr(p, "deadline", "")),
         ]
 
-        # Section 3: Creative Lab Summary (Live Derived Metrics)
         sections = [
             InspectableSection("General", general_fields),
             InspectableSection("Organization", org_fields),
         ]
 
-        if self.lab_service:
+        # Section 3: Project Overview / Metrics (Derived)
+        if self.project_context_service:
+            try:
+                ctx = self.project_context_service.get_project_context(p)
+                avail = ctx.availability_summary
+                lib_str = f"{ctx.library_summary.total_linked_assets} ({avail.online_library_assets} 🟢, {avail.offline_library_assets} 🟠, {avail.missing_library_assets} 🔴)"
+                overview_fields = [
+                    InspectableField("overview_assets", "Total Assets", "readonly", value=str(ctx.asset_summary.total_assets)),
+                    InspectableField("overview_knowledge", "Knowledge Notes", "readonly", value=str(ctx.knowledge_summary.total_notes)),
+                    InspectableField("overview_library", "Library References", "readonly", value=lib_str),
+                    InspectableField("overview_lab", "Lab Boards", "readonly", value=f"{ctx.lab_summary.total_boards} ({ctx.lab_summary.total_nodes} nodes)"),
+                    InspectableField("overview_tasks", "Checklist Tasks", "readonly", value=f"{ctx.lab_summary.task_status.get('completed', 0)} / {ctx.lab_summary.task_status.get('total', 0)} Done"),
+                ]
+                sections.append(InspectableSection("Project Overview", overview_fields))
+            except Exception:
+                pass
+        elif self.lab_service:
             try:
                 summary = self.lab_service.get_project_summary_metadata(p)
                 t_stats = summary.get("task_stats", {})
@@ -199,8 +215,6 @@ class ProjectInspectable(InspectableObject):
                     pass
 
         return updated
-
-
 class AssetInspectable(InspectableObject):
     """Adapter wrapping Asset dictionary properties into InspectableObject contract."""
 
@@ -213,27 +227,133 @@ class AssetInspectable(InspectableObject):
         return self.asset_dict.get("filename", "Asset Details")
 
     def get_display_icon(self) -> str:
+        cat = str(self.asset_dict.get("category", "")).lower()
+        if cat == "renders":
+            return "🎬"
+        elif cat == "exports":
+            return "📤"
+        elif cat == "references":
+            return "🖼️"
         return "📦"
 
     def get_inspection_sections(self) -> List[InspectableSection]:
         a = self.asset_dict
-        general_fields = [
-            InspectableField("filename", "Filename", "readonly", value=a.get("filename", "—")),
-            InspectableField("friendly_type", "Type", "readonly", value=a.get("friendly_type", "—")),
-            InspectableField("category", "Category", "readonly", value=a.get("category", "—")),
-            InspectableField("relative_path", "Path", "readonly", value=a.get("relative_path", "—")),
-            InspectableField("tags", "Tags", "tags", value=", ".join(a.get("tags", [])) if a.get("tags") else ""),
-            InspectableField("notes", "Notes", "text", value=a.get("notes", "")),
-        ]
-        return [InspectableSection("Asset Properties", general_fields)]
+        cat = str(a.get("category", "")).lower()
+        filename = a.get("filename", "—")
+        friendly_type = a.get("friendly_type", "—")
+        rel_path = a.get("relative_path", "—")
+        tags_val = ", ".join(a.get("tags", [])) if a.get("tags") else ""
+        notes_val = a.get("notes", "")
+
+        fields = []
+
+        if cat == "renders":
+            fields.append(InspectableField("filename", "Filename", "readonly", value=filename))
+            fields.append(InspectableField("friendly_type", "Format", "readonly", value=friendly_type))
+
+            # Resolution if reliably available
+            resolution = a.get("resolution") or a.get("metadata", {}).get("resolution")
+            if not resolution and a.get("absolute_path"):
+                try:
+                    p = Path(a["absolute_path"])
+                    if p.exists() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
+                        from PySide6.QtGui import QImageReader
+                        reader = QImageReader(str(p))
+                        sz = reader.size()
+                        if sz.isValid():
+                            resolution = f"{sz.width()} × {sz.height()}"
+                except Exception:
+                    pass
+            if resolution:
+                fields.append(InspectableField("resolution", "Resolution", "readonly", value=str(resolution)))
+
+            # Frame range if reliably available
+            frame_range = a.get("frame_range") or a.get("metadata", {}).get("frame_range")
+            if frame_range:
+                fields.append(InspectableField("frame_range", "Frame Range", "readonly", value=str(frame_range)))
+
+            # Version if reliably available
+            version = a.get("version") or a.get("metadata", {}).get("version")
+            if version:
+                fields.append(InspectableField("version", "Version", "readonly", value=str(version)))
+
+            fields.append(InspectableField("relative_path", "Path", "readonly", value=rel_path))
+            fields.append(InspectableField("tags", "Tags", "tags", value=tags_val))
+            fields.append(InspectableField("notes", "Notes", "text", value=notes_val))
+
+            return [InspectableSection("Render Properties", fields)]
+
+        elif cat == "exports":
+            fields.append(InspectableField("filename", "Filename", "readonly", value=filename))
+            fields.append(InspectableField("friendly_type", "Format", "readonly", value=friendly_type))
+
+            # Version if reliably available
+            version = a.get("version") or a.get("metadata", {}).get("version")
+            if version:
+                fields.append(InspectableField("version", "Version", "readonly", value=str(version)))
+
+            # Engine / Target if reliably available
+            target_engine = a.get("target_engine") or a.get("metadata", {}).get("target_engine")
+            if target_engine:
+                fields.append(InspectableField("target_engine", "Target Engine", "readonly", value=str(target_engine)))
+
+            # LOD if reliably available
+            lod = a.get("lod") or a.get("metadata", {}).get("lod")
+            if lod:
+                fields.append(InspectableField("lod", "LOD Level", "readonly", value=str(lod)))
+
+            fields.append(InspectableField("relative_path", "Path", "readonly", value=rel_path))
+            fields.append(InspectableField("tags", "Tags", "tags", value=tags_val))
+            fields.append(InspectableField("notes", "Notes", "text", value=notes_val))
+
+            return [InspectableSection("Export Properties", fields)]
+
+        elif a.get("is_library_reference"):
+            avail_val = a.get("availability") or "Available"
+            drive_val = a.get("drive_name") or a.get("drive_id") or "External Drive"
+            fields = [
+                InspectableField("source", "Reference Source", "readonly", value="📚 Global Asset Library Reference"),
+                InspectableField("filename", "Filename", "readonly", value=filename),
+                InspectableField("friendly_type", "Type", "readonly", value=friendly_type),
+                InspectableField("availability", "Availability", "readonly", value=avail_val),
+                InspectableField("drive", "Source Drive", "readonly", value=str(drive_val)),
+                InspectableField("drive_relative_path", "Drive Path", "readonly", value=a.get("drive_relative_path", "—")),
+                InspectableField("tags", "Tags", "tags", value=tags_val),
+                InspectableField("notes", "Notes", "text", value=notes_val),
+            ]
+            return [InspectableSection("Library Reference Properties", fields)]
+
+        else:
+            fields = [
+                InspectableField("filename", "Filename", "readonly", value=filename),
+                InspectableField("friendly_type", "Type", "readonly", value=friendly_type),
+                InspectableField("category", "Category", "readonly", value=a.get("category", "—")),
+                InspectableField("relative_path", "Path", "readonly", value=rel_path),
+                InspectableField("tags", "Tags", "tags", value=tags_val),
+                InspectableField("notes", "Notes", "text", value=notes_val),
+            ]
+            return [InspectableSection("Asset Properties", fields)]
 
     def set_inspectable_property(self, field_key: str, value: Any) -> bool:
         if field_key == "tags":
             tags_list = [t.strip() for t in str(value).split(",") if t.strip()]
             self.asset_dict["tags"] = tags_list
+            if self.asset_service and self.project:
+                target_ids = [fa["id"] for fa in self.asset_dict.get("frame_assets", []) if "id" in fa]
+                if not target_ids and self.asset_dict.get("id"):
+                    target_ids = [self.asset_dict["id"]]
+                for aid in target_ids:
+                    self.asset_service.update_asset(self.project, aid, {"tags": tags_list})
             return True
         elif field_key == "notes":
-            self.asset_dict["notes"] = str(value)
+            notes_str = str(value)
+            self.asset_dict["notes"] = notes_str
+            if self.asset_service and self.project:
+                target_ids = [fa["id"] for fa in self.asset_dict.get("frame_assets", []) if "id" in fa]
+                if not target_ids and self.asset_dict.get("id"):
+                    target_ids = [self.asset_dict["id"]]
+                for aid in target_ids:
+                    self.asset_service.update_asset(self.project, aid, {"notes": notes_str})
             return True
         return False
 
@@ -847,3 +967,341 @@ class ConnectorInspectable(InspectableObject):
             mgr.update_relationship(c.id, target_anchor=str(value or "center"))
             return True
         return False
+
+
+class LibraryAssetInspectable(InspectableObject):
+    """Adapter wrapping a LibraryAsset or dictionary into the InspectableObject contract."""
+
+    def __init__(self, library_asset, library_service=None, context=None, on_updated_callback=None):
+        self.asset = library_asset
+        self.library_service = library_service
+        self.context = context
+        self.on_updated_callback = on_updated_callback
+
+    def get_display_name(self) -> str:
+        if isinstance(self.asset, dict):
+            return self.asset.get("filename", "Library Asset")
+        return getattr(self.asset, "filename", "Library Asset")
+
+    def get_display_icon(self) -> str:
+        return "📚"
+
+    def _get_val(self, key, default=None):
+        if isinstance(self.asset, dict):
+            return self.asset.get(key, default)
+        return getattr(self.asset, key, default)
+
+    def get_inspection_sections(self) -> List[InspectableSection]:
+        if not self.asset:
+            return []
+
+        filename = self._get_val("filename", "—")
+        friendly_type = self._get_val("friendly_type", "—")
+        category = self._get_val("category", "—")
+        drive_rel = self._get_val("drive_relative_path", "—")
+        tags_raw = self._get_val("tags", [])
+        tags_val = ", ".join(tags_raw) if tags_raw else ""
+        notes_val = self._get_val("notes", "")
+        favorite = bool(self._get_val("favorite", False))
+
+        # Resolve drive name
+        drive_name = "External Drive"
+        drive_id = self._get_val("drive_id", "")
+        if self.library_service and hasattr(self.library_service, "get_drive"):
+            d = self.library_service.get_drive(drive_id)
+            if d:
+                drive_name = d.name
+
+        # Resolve availability
+        avail_str = "Available"
+        if self.library_service and hasattr(self.library_service, "get_asset_availability"):
+            avail_enum = self.library_service.get_asset_availability(self.asset)
+            avail_str = avail_enum.value if hasattr(avail_enum, "value") else str(avail_enum)
+
+        # Resolve project reference status
+        proj_ref_val = "Not Referenced"
+        curr_proj = getattr(self.context, "current_project", None) if getattr(self, "context", None) else None
+        if curr_proj:
+            refs = self._get_val("project_references", [])
+            is_ref = any(r.get("project_location") == curr_proj.location for r in refs)
+            if is_ref:
+                proj_ref_val = f"Referenced in '{curr_proj.name}'"
+            else:
+                proj_ref_val = f"Not Referenced in '{curr_proj.name}'"
+
+        # File size formatting
+        size_bytes = self._get_val("file_size", 0)
+        if size_bytes < 1024:
+            size_str = f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            size_str = f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+        else:
+            size_str = f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+        fields = [
+            InspectableField("source", "Catalog Source", "readonly", value="📚 Global Asset Library"),
+            InspectableField("filename", "Filename", "readonly", value=filename),
+            InspectableField("friendly_type", "Type", "readonly", value=friendly_type),
+            InspectableField("category", "Category", "readonly", value=category),
+            InspectableField("drive", "Location / Drive", "readonly", value=drive_name),
+            InspectableField("drive_relative_path", "Relative Path", "readonly", value=drive_rel),
+            InspectableField("availability", "Availability", "readonly", value=avail_str),
+            InspectableField("project_reference", "Project Reference", "readonly", value=proj_ref_val),
+            InspectableField("file_size", "Size", "readonly", value=size_str),
+        ]
+
+        version = self._get_val("version")
+        if version:
+            fields.append(InspectableField("version", "Version", "readonly", value=str(version)))
+
+        lod = self._get_val("lod")
+        if lod:
+            fields.append(InspectableField("lod", "LOD Level", "readonly", value=str(lod)))
+
+        fields.append(InspectableField("favorite", "Favorite", "boolean", value=favorite))
+        fields.append(InspectableField("tags", "Tags", "tags", value=tags_val))
+        fields.append(InspectableField("notes", "Notes", "text", value=notes_val))
+
+        return [InspectableSection("Library Asset Properties", fields)]
+
+    def set_inspectable_property(self, field_key: str, value: Any) -> bool:
+        if not self.asset:
+            return False
+
+        updated = False
+        asset_id = self._get_val("id")
+
+        if field_key == "tags":
+            if isinstance(value, str):
+                tags_list = [t.strip() for t in value.split(",") if t.strip()]
+            elif isinstance(value, (list, tuple)):
+                tags_list = [str(t).strip() for t in value if str(t).strip()]
+            else:
+                tags_list = []
+
+            if isinstance(self.asset, dict):
+                self.asset["tags"] = tags_list
+            else:
+                self.asset.tags = tags_list
+
+            if self.library_service and asset_id:
+                self.library_service.update_asset(asset_id, tags=tags_list)
+            updated = True
+
+        elif field_key == "notes":
+            notes_str = str(value)
+            if isinstance(self.asset, dict):
+                self.asset["notes"] = notes_str
+            else:
+                self.asset.notes = notes_str
+
+            if self.library_service and asset_id:
+                self.library_service.update_asset(asset_id, notes=notes_str)
+            updated = True
+
+        elif field_key == "favorite":
+            fav_bool = bool(value)
+            if isinstance(self.asset, dict):
+                self.asset["favorite"] = fav_bool
+            else:
+                self.asset.favorite = fav_bool
+
+            if self.library_service and asset_id:
+                self.library_service.update_asset(asset_id, favorite=fav_bool)
+            updated = True
+
+        if updated and self.on_updated_callback:
+            try:
+                self.on_updated_callback(self.asset)
+            except Exception:
+                pass
+
+        return updated
+
+
+class LibraryFolderInspectable(InspectableObject):
+    """Adapter wrapping a LibraryLocation or Library subfolder into the InspectableObject contract."""
+
+    def __init__(self, folder_data: dict, library_service=None, on_updated_callback=None):
+        self.folder_data = folder_data or {}
+        self.library_service = library_service
+        self.on_updated_callback = on_updated_callback
+
+    def get_display_name(self) -> str:
+        return self.folder_data.get("name", "Folder Details")
+
+    def get_display_icon(self) -> str:
+        if self.folder_data.get("favorite"):
+            return "⭐📁"
+        return "📁"
+
+    def get_inspection_sections(self) -> List[InspectableSection]:
+        f = self.folder_data
+        name = f.get("name", "—")
+        drive_name = f.get("drive_name", "External Drive")
+        rel_path = f.get("relative_path", "—")
+        avail_str = f.get("availability", "Available")
+        asset_count = f.get("asset_count", 0)
+        favorite = bool(f.get("favorite", False))
+
+        fields = [
+            InspectableField("name", "Folder Name", "readonly", value=name),
+            InspectableField("drive", "Location / Drive", "readonly", value=drive_name),
+            InspectableField("relative_path", "Relative Path", "readonly", value=rel_path),
+            InspectableField("availability", "Availability", "readonly", value=avail_str),
+            InspectableField("item_count", "Total Items", "readonly", value=f"{asset_count} items"),
+            InspectableField("favorite", "Favorite Folder", "boolean", value=favorite),
+        ]
+
+        return [InspectableSection("Folder Properties", fields)]
+
+    def set_inspectable_property(self, field_key: str, value: Any) -> bool:
+        if field_key == "favorite":
+            fav_bool = bool(value)
+            self.folder_data["favorite"] = fav_bool
+            loc_id = self.folder_data.get("location_id")
+            if self.library_service and loc_id:
+                self.library_service.update_location(loc_id, favorite=fav_bool)
+
+            if self.on_updated_callback:
+                try:
+                    self.on_updated_callback(self.folder_data)
+                except Exception:
+                    pass
+            return True
+        return False
+
+
+class KnowledgeDocumentInspectable(InspectableObject):
+    """Adapter wrapping a KnowledgeDocument model into the InspectableObject contract."""
+
+    def __init__(self, doc, knowledge_service=None, on_updated_callback=None):
+        self.doc = doc
+        self.knowledge_service = knowledge_service
+        self.on_updated_callback = on_updated_callback
+
+    def get_display_name(self) -> str:
+        return self.doc.title if self.doc else "Untitled Note"
+
+    def get_display_icon(self) -> str:
+        if self.doc and getattr(self.doc, "favorite", False):
+            return "⭐📝"
+        return "📝"
+
+    def get_inspection_sections(self) -> List[InspectableSection]:
+        if not self.doc:
+            return []
+
+        # Resolve Folder Name
+        folder_name = "Root (No Folder)"
+        folder_id = getattr(self.doc, "folder_id", None)
+        if folder_id and self.knowledge_service:
+            try:
+                fld = self.knowledge_service.get_folder(folder_id)
+                if fld:
+                    folder_name = fld.name
+            except Exception:
+                folder_name = str(folder_id)
+
+        # General properties
+        title_val = getattr(self.doc, "title", "Untitled Note")
+        tags_val = getattr(self.doc, "tags", [])
+        tags_str = ", ".join(tags_val) if isinstance(tags_val, list) else str(tags_val)
+        fav_val = bool(getattr(self.doc, "favorite", False))
+
+        general_fields = [
+            InspectableField("title", "Document Title", "string", value=title_val),
+            InspectableField("folder", "Folder", "readonly", value=folder_name),
+            InspectableField("favorite", "Favorite", "boolean", value=fav_val),
+            InspectableField("tags", "Tags", "tags", value=tags_str),
+        ]
+
+        # Metadata
+        created_raw = getattr(self.doc, "created", None)
+        modified_raw = getattr(self.doc, "modified", None)
+        created_str = "—"
+        modified_str = "—"
+        if created_raw:
+            try:
+                from datetime import datetime
+                created_str = datetime.fromisoformat(created_raw).strftime("%d %b %Y %H:%M")
+            except Exception:
+                created_str = str(created_raw)
+        if modified_raw:
+            try:
+                from datetime import datetime
+                modified_str = datetime.fromisoformat(modified_raw).strftime("%d %b %Y %H:%M")
+            except Exception:
+                modified_str = str(modified_raw)
+
+        content = getattr(self.doc, "content", "")
+        metadata_fields = [
+            InspectableField("id", "Document ID", "readonly", value=getattr(self.doc, "id", "—")),
+            InspectableField("char_count", "Characters", "readonly", value=f"{len(content)} characters"),
+            InspectableField("created", "Created", "readonly", value=created_str),
+            InspectableField("modified", "Modified", "readonly", value=modified_str),
+        ]
+
+        # Relationships
+        proj_count = len(getattr(self.doc, "project_ids", []))
+        lib_count = len(getattr(self.doc, "library_asset_ids", []))
+        proj_asset_count = len(getattr(self.doc, "project_asset_refs", []))
+        lab_count = len(getattr(self.doc, "lab_node_ids", []))
+        total_rels = proj_count + lib_count + proj_asset_count + lab_count
+
+        rel_fields = [
+            InspectableField("total_relationships", "Total Linked", "readonly", value=f"{total_rels} items"),
+            InspectableField("linked_projects", "Projects", "readonly", value=f"{proj_count} linked" if proj_count else "None"),
+            InspectableField("linked_library_assets", "Library Assets", "readonly", value=f"{lib_count} linked" if lib_count else "None"),
+            InspectableField("linked_project_assets", "Project Assets", "readonly", value=f"{proj_asset_count} linked" if proj_asset_count else "None"),
+            InspectableField("linked_lab_nodes", "Lab Nodes", "readonly", value=f"{lab_count} linked" if lab_count else "None"),
+        ]
+
+        return [
+            InspectableSection("Document Properties", general_fields),
+            InspectableSection("Relationships", rel_fields),
+            InspectableSection("Metadata", metadata_fields),
+        ]
+
+    def set_inspectable_property(self, field_key: str, value: Any) -> bool:
+        if not self.doc:
+            return False
+
+        updated = False
+        doc_id = getattr(self.doc, "id", None)
+
+        if field_key == "title":
+            title_str = str(value).strip() or "Untitled Note"
+            self.doc.title = title_str
+            if self.knowledge_service and doc_id:
+                self.knowledge_service.update_document(doc_id, title=title_str)
+            updated = True
+
+        elif field_key in ("favorite", "is_favorite"):
+            fav_bool = bool(value)
+            self.doc.favorite = fav_bool
+            if self.knowledge_service and doc_id:
+                self.knowledge_service.update_document(doc_id, favorite=fav_bool)
+            updated = True
+
+        elif field_key == "tags":
+            if isinstance(value, str):
+                tags_list = [t.strip() for t in value.split(",") if t.strip()]
+            elif isinstance(value, (list, tuple)):
+                tags_list = [str(t).strip() for t in value if str(t).strip()]
+            else:
+                tags_list = []
+            self.doc.tags = tags_list
+            if self.knowledge_service and doc_id:
+                self.knowledge_service.update_document(doc_id, tags=tags_list)
+            updated = True
+
+        if updated and self.on_updated_callback:
+            try:
+                self.on_updated_callback(self.doc)
+            except Exception:
+                pass
+
+        return updated
