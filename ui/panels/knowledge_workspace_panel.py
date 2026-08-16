@@ -1006,7 +1006,8 @@ class KnowledgeWorkspacePanel(QWidget):
                         self._current_doc_id,
                         target_data.get("project_id", ""),
                         target_data.get("asset_id", ""),
-                        target_data.get("relative_path", "")
+                        target_data.get("relative_path", ""),
+                        category=target_data.get("category"),
                     )
                 elif rel_type == "lab_node":
                     updated_doc = self.knowledge_service.add_lab_node_relationship(
@@ -1046,6 +1047,7 @@ class KnowledgeWorkspacePanel(QWidget):
                 data.get("project_id", ""),
                 data.get("asset_id", "") or data.get("relative_path", ""),
                 rel_path=data.get("relative_path"),
+                category=data.get("category"),
                 metadata=data,
             )
             wm.navigate(payload)

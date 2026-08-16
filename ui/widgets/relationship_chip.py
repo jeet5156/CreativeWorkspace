@@ -160,6 +160,7 @@ class RelationshipChip(QFrame):
             proj_id = self.data.get("project_id", "")
             asset_id = self.data.get("asset_id", "")
             rel_path = self.data.get("relative_path", "")
+            category = self.data.get("category", "")
             icon = "📦"
             title = Path(rel_path).name if rel_path else (asset_id or "Asset")
             status = "Available"
@@ -172,10 +173,26 @@ class RelationshipChip(QFrame):
                 if proj:
                     entry = None
                     if asset_svc:
-                        entry = asset_svc.get_asset(proj, asset_id or rel_path)
+                        if rel_path:
+                            entry = asset_svc.get_asset(proj, rel_path)
+                        if not entry and asset_id:
+                            entry = asset_svc.get_asset(proj, asset_id)
+                        if not entry and (rel_path or asset_id):
+                            fn_candidate = Path(rel_path or asset_id).name
+                            entry = asset_svc.get_asset(proj, fn_candidate)
 
                     if entry:
                         title = entry.get("filename") or title
+                        cat = entry.get("category") or category
+                        if str(cat).lower() == "references":
+                            icon = "🖼️"
+                        elif str(cat).lower() == "renders":
+                            icon = "🎬"
+                        elif str(cat).lower() == "exports":
+                            icon = "📤"
+                        else:
+                            icon = "📦"
+
                         abs_p = entry.get("absolute_path")
                         if abs_p and not Path(abs_p).exists():
                             status = "Missing"
@@ -183,14 +200,60 @@ class RelationshipChip(QFrame):
                         else:
                             status = "Available"
                             color = "#10B981"
+
+                            # Safely reconcile chip data and persisted Knowledge relationship
+                            live_id = entry.get("id")
+                            live_rp = entry.get("relative_path")
+                            live_cat = entry.get("category") or cat
+                            stale_detected = (live_id and live_id != asset_id) or (live_rp and live_rp != rel_path) or (live_cat and live_cat != category)
+                            if live_id:
+                                self.data["asset_id"] = live_id
+                            if live_rp:
+                                self.data["relative_path"] = live_rp
+                            if live_cat:
+                                self.data["category"] = live_cat
+
+                            if stale_detected and self._context and getattr(self._context, "knowledge_service", None):
+                                try:
+                                    self._context.knowledge_service.reconcile_project_asset_relationship(
+                                        None, proj.name, asset_id or rel_path, entry
+                                    )
+                                except Exception:
+                                    pass
                     else:
                         # Fallback direct disk check if entry was not yet indexed
-                        disk_p = Path(proj.location) / (rel_path or asset_id)
-                        if disk_p.exists():
-                            title = disk_p.name
-                            status = "Available"
-                            color = "#10B981"
-                        else:
+                        p_root = Path(proj.location)
+                        disk_found = False
+                        check_candidates = []
+                        if rel_path:
+                            check_candidates.append(p_root / rel_path)
+                        if asset_id:
+                            check_candidates.append(p_root / asset_id)
+                            fn = Path(asset_id).name
+                            check_candidates.append(p_root / "References" / fn)
+                            check_candidates.append(p_root / "Assets" / fn)
+                            check_candidates.append(p_root / "Renders" / fn)
+                            check_candidates.append(p_root / "Exports" / fn)
+
+                        for cand in check_candidates:
+                            if cand.exists() and cand.is_file():
+                                title = cand.name
+                                status = "Available"
+                                color = "#10B981"
+                                disk_found = True
+                                try:
+                                    top_p = cand.relative_to(p_root).parts[0].lower()
+                                    if top_p == "references":
+                                        icon = "🖼️"
+                                    elif top_p == "renders":
+                                        icon = "🎬"
+                                    elif top_p == "exports":
+                                        icon = "📤"
+                                except Exception:
+                                    pass
+                                break
+
+                        if not disk_found:
                             status = "Missing"
                             color = "#EF4444"
                 else:

@@ -299,8 +299,8 @@ class AddKnowledgeRelationshipDialog(QDialog):
 
             if not query_clean or query_clean in fn.lower() or query_clean in rp.lower() or query_clean in cat.lower():
                 item = QListWidgetItem(f"📦  {fn}  [{cat} • {rp}]")
-                item.setData(Qt.UserRole, {"project_id": curr_proj.name, "asset_id": a_id, "relative_path": rp})
-                item.setToolTip(f"ID: {a_id}\nRelative Path: {rp}")
+                item.setData(Qt.UserRole, {"project_id": curr_proj.name, "asset_id": a_id, "relative_path": rp, "category": cat})
+                item.setToolTip(f"ID: {a_id}\nRelative Path: {rp}\nCategory: {cat}")
                 self.proj_asset_list.addItem(item)
 
         if self.proj_asset_list.count() > 0:

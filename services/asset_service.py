@@ -62,8 +62,12 @@ class AssetService(QObject):
 
     def _ensure_index_loaded(self, project):
         if project.location not in self._indices:
-            return self._load_index(project)
-        return self._indices[project.location]
+            idx_path = self._index_path(project)
+            if not idx_path.exists():
+                self.rebuild_index(project)
+            else:
+                self._load_index(project)
+        return self._indices.get(project.location, [])
 
     def _friendly_type_for(self, path: Path) -> str:
         ext = path.suffix.lower()
@@ -513,45 +517,97 @@ class AssetService(QObject):
         self._save_index(project)
         return True
 
+    def _is_entry_physically_live(self, project, entry: dict) -> bool:
+        """Return True if entry is physically present on disk or is an external Library reference."""
+        if not entry:
+            return False
+        if entry.get("is_library_reference"):
+            return True
+        p_root = Path(project.location)
+        abs_p = entry.get("absolute_path")
+        if abs_p and Path(abs_p).exists() and Path(abs_p).is_file():
+            return True
+        rel_p = entry.get("relative_path")
+        if rel_p and (p_root / rel_p).exists() and (p_root / rel_p).is_file():
+            return True
+        return False
+
     def get_asset(self, project, asset_id_or_path: str):
-        """Return a single asset metadata dict by id, relative_path, or filename."""
+        """Return a single asset metadata dict by id, relative_path, or filename, preferring live physical files over stale index entries."""
         if not project or not asset_id_or_path:
             return None
         assets = self._ensure_index_loaded(project)
         target_str = str(asset_id_or_path).strip()
+        stale_candidate = None
 
         # 1. Exact ID match
         for a in assets:
             if str(a.get("id")) == target_str:
-                return a
+                if self._is_entry_physically_live(project, a):
+                    return a
+                elif stale_candidate is None:
+                    stale_candidate = a
 
         # 2. Normalized relative path match
         norm_target = target_str.replace("\\", "/").strip("/")
         for a in assets:
             rp = (a.get("relative_path") or "").replace("\\", "/").strip("/")
             if rp.lower() == norm_target.lower():
-                return a
+                if self._is_entry_physically_live(project, a):
+                    return a
+                elif stale_candidate is None:
+                    stale_candidate = a
 
-        # 3. Filename match
-        target_name = Path(norm_target).name.lower()
-        for a in assets:
-            fn = (a.get("filename") or Path(a.get("relative_path", "")).name).lower()
-            if fn == target_name:
-                return a
+        # 3. Filename match across indexed assets (preferring physically live files)
+        candidate_names = set()
+        if "." in Path(norm_target).name:
+            candidate_names.add(Path(norm_target).name.lower())
+        if stale_candidate:
+            stale_fn = stale_candidate.get("filename") or Path(stale_candidate.get("relative_path", "")).name
+            if stale_fn:
+                candidate_names.add(stale_fn.lower())
 
-        # 4. Fallback check for file on disk inside project root
+        if candidate_names:
+            for a in assets:
+                fn = (a.get("filename") or Path(a.get("relative_path", "")).name).lower()
+                if fn in candidate_names:
+                    if self._is_entry_physically_live(project, a):
+                        return a
+                    elif stale_candidate is None:
+                        stale_candidate = a
+
+        # 4. Fallback check for file on disk inside project root or standard subfolders
         try:
             p_root = Path(project.location)
             candidate_p = p_root / norm_target
             if candidate_p.exists() and candidate_p.is_file():
                 rel = str(candidate_p.relative_to(p_root)).replace("\\", "/")
+                # Check if existing index entry matches this relative path
+                existing_match = next((a for a in assets if (a.get("relative_path") or "").replace("\\", "/").lower() == rel.lower()), None)
+                if existing_match:
+                    return existing_match
                 top = rel.split("/")[0] if "/" in rel else "Assets"
                 cat = top.capitalize()
                 return self._make_asset_entry(project, str(candidate_p.resolve()), cat)
+
+            # Search in standard category folders if not directly found
+            folders = ["References", "Assets", "Renders", "Exports"]
+            search_filenames = [norm_target]
+            search_filenames.extend(list(candidate_names))
+
+            for folder in folders:
+                for fn_query in search_filenames:
+                    f_candidate = p_root / folder / fn_query
+                    if f_candidate.exists() and f_candidate.is_file():
+                        rel = str(f_candidate.relative_to(p_root)).replace("\\", "/")
+                        existing_match = next((a for a in assets if (a.get("relative_path") or "").replace("\\", "/").lower() == rel.lower()), None)
+                        if existing_match:
+                            return existing_match
+                        return self._make_asset_entry(project, str(f_candidate.resolve()), folder)
         except Exception:
             pass
 
-        return None
+        return stale_candidate
 
     def get_asset_by_path(self, project, rel_path: str):
         """Lookup asset metadata by relative path."""

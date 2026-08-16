@@ -59,8 +59,11 @@ class NavigationPayload:
         p_name = project_or_name.name if hasattr(project_or_name, "name") else str(project_or_name)
         p_obj = project_or_name if hasattr(project_or_name, "name") else None
 
-        effective_rel_path = rel_path or (asset_id_or_path if "/" in str(asset_id_or_path) or "\\" in str(asset_id_or_path) else None)
+        meta = dict(metadata or {})
+        effective_rel_path = rel_path or meta.get("relative_path") or (asset_id_or_path if "/" in str(asset_id_or_path) or "\\" in str(asset_id_or_path) else None)
         normalized_rel = str(effective_rel_path).replace("\\", "/").strip("/") if effective_rel_path else ""
+
+        effective_category = category or meta.get("category")
 
         # Determine workspace section from relative path or category
         section = "assets"
@@ -81,12 +84,14 @@ class NavigationPayload:
                 folder_subpath = "/".join(parts[:-1])
             else:
                 folder_subpath = parts[0]
-        elif category:
-            cat_l = category.lower()
+        elif effective_category:
+            cat_l = str(effective_category).lower()
             if cat_l in ("references", "renders", "exports", "notes", "library_references"):
                 section = cat_l
+                folder_subpath = effective_category.capitalize()
             else:
                 section = "assets"
+                folder_subpath = "Assets"
 
         return cls(
             target_type=NavigationTargetType.PROJECT_ASSET.value,
@@ -95,7 +100,7 @@ class NavigationPayload:
             section=section,
             rel_path=folder_subpath,
             target_id=str(asset_id_or_path),
-            metadata=dict(metadata or {}),
+            metadata=meta,
         )
 
     @classmethod

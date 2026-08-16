@@ -250,8 +250,17 @@ class WorkspaceManager:
 
             asset_svc = getattr(self.context, "asset_service", None)
             asset_entry = None
-            if asset_svc and payload.target_id:
-                asset_entry = asset_svc.get_asset(proj, payload.target_id)
+            if asset_svc:
+                if payload.target_id:
+                    asset_entry = asset_svc.get_asset(proj, payload.target_id)
+                if not asset_entry:
+                    rp_cand = payload.rel_path or payload.metadata.get("relative_path")
+                    if rp_cand:
+                        asset_entry = asset_svc.get_asset(proj, rp_cand)
+                if not asset_entry and payload.metadata.get("asset_id"):
+                    asset_entry = asset_svc.get_asset(proj, payload.metadata.get("asset_id"))
+                if not asset_entry and payload.target_id:
+                    asset_entry = asset_svc.get_asset(proj, Path(payload.target_id).name)
 
             section = payload.section or "assets"
             rel_folder = payload.rel_path
@@ -260,6 +269,7 @@ class WorkspaceManager:
             if asset_entry:
                 asset_id_to_select = asset_entry.get("id") or payload.target_id
                 rp = asset_entry.get("relative_path", "")
+                cat = asset_entry.get("category", "")
                 if rp:
                     parts = rp.replace("\\", "/").split("/")
                     top = parts[0].lower()
@@ -273,6 +283,17 @@ class WorkspaceManager:
                         rel_folder = "/".join(parts[:-1])
                     else:
                         rel_folder = parts[0]
+                elif cat:
+                    cat_l = str(cat).lower()
+                    if cat_l in ("references", "renders", "exports", "notes", "library_references"):
+                        section = cat_l
+                        rel_folder = cat.capitalize()
+            else:
+                meta_cat = payload.metadata.get("category") or payload.section
+                if meta_cat and str(meta_cat).lower() in ("references", "renders", "exports", "notes", "library_references"):
+                    section = str(meta_cat).lower()
+                    if not rel_folder:
+                        rel_folder = meta_cat.capitalize()
 
             self.show_project(proj, section=section, rel_path=rel_folder)
 

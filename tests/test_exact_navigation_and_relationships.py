@@ -228,6 +228,221 @@ class TestExactNavigationAndRelationships(unittest.TestCase):
         self.assertIsNotNone(self.inspector_panel._current_inspectable)
         self.assertEqual(self.inspector_panel._current_inspectable.get_display_name(), self.image_filename)
 
+    def test_cyclops_reference_regression_resolution_and_navigation(self):
+        """Regression test for Issue 1:
+        Knowledge document linked to an image located under Cyclops References folder.
+        - Relationship status: Available
+        - Category: References
+        - Duplicate prevention on re-adding
+        - Clicking opens Cyclops References location (never Assets root)
+        - Exact image selected and shown in Inspector
+        - Stale/unindexed ID and path-only variants resolve correctly
+        """
+        # 1. Create Knowledge document and link Cyclops reference
+        doc = self.knowledge_svc.create_document(title="Cyclops Storyboard & Ref", content="Design references")
+        doc = self.knowledge_svc.add_project_asset_relationship(
+            doc.id,
+            project_id="Cyclops",
+            asset_id=self.image_filename,
+            relative_path=f"References/{self.image_filename}",
+            category="References",
+        )
+        self.assertEqual(len(doc.project_asset_refs), 1)
+        ref_record = doc.project_asset_refs[0]
+        self.assertEqual(ref_record.get("category"), "References")
+        self.assertEqual(ref_record.get("relative_path"), f"References/{self.image_filename}")
+
+        # 2. Idempotency test: Adding same reference again must not duplicate records
+        doc = self.knowledge_svc.add_project_asset_relationship(
+            doc.id,
+            project_id="Cyclops",
+            asset_id=self.image_filename,
+            relative_path=f"References/{self.image_filename}",
+            category="References",
+        )
+        self.assertEqual(len(doc.project_asset_refs), 1)
+
+        # 3. Test RelationshipChip resolution
+        chip = RelationshipChip("project_asset", ref_record, context=self.context)
+        icon, title, status, color = chip._resolve_entity_info()
+        self.assertEqual(status, "Available")
+        self.assertEqual(color, "#10B981")
+        self.assertEqual(icon, "🖼️")
+        self.assertIn(self.image_filename, title)
+
+        # Test stale ID resolution variant (e.g. hash mismatch from old session)
+        stale_chip = RelationshipChip(
+            "project_asset",
+            {
+                "project_id": "Cyclops",
+                "asset_id": "stale_hash_pa_999",
+                "relative_path": f"References/{self.image_filename}",
+                "category": "References",
+            },
+            context=self.context,
+        )
+        _, _, stale_stat, _ = stale_chip._resolve_entity_info()
+        self.assertEqual(stale_stat, "Available")
+
+        # Test filename-only variant
+        fn_chip = RelationshipChip(
+            "project_asset",
+            {
+                "project_id": "Cyclops",
+                "asset_id": self.image_filename,
+            },
+            context=self.context,
+        )
+        _, _, fn_stat, _ = fn_chip._resolve_entity_info()
+        self.assertEqual(fn_stat, "Available")
+
+        # 4. Test exact navigation via Knowledge chip click flow
+        payload = NavigationPayload.for_project_asset(
+            "Cyclops",
+            self.image_filename,
+            rel_path=f"References/{self.image_filename}",
+            category="References",
+            metadata=ref_record,
+        )
+        nav_result = self.wm.navigate(payload)
+        self.assertTrue(nav_result)
+
+        # Must navigate to References section, NOT Assets root
+        self.assertEqual(self.context.current_project.name, "Cyclops")
+        self.assertEqual(self.workspace_panel._current_section, "references")
+        self.assertNotEqual(self.workspace_panel._current_section, "assets")
+
+        # Exact referenced image must be selected in AssetWorkspacePanel
+        asset_wp = self.workspace_panel.asset_workspace
+        selected_ids = asset_wp.get_selected_ids()
+        self.assertTrue(len(selected_ids) > 0)
+        selected_card = asset_wp._cards.get(next(iter(selected_ids)))
+        self.assertIsNotNone(selected_card)
+        self.assertEqual(selected_card.asset["filename"], self.image_filename)
+        self.assertEqual(selected_card.asset.get("category"), "References")
+
+        # Inspector must show the exact asset
+        self.assertIsNotNone(self.inspector_panel._current_inspectable)
+        self.assertEqual(self.inspector_panel._current_inspectable.get_display_name(), self.image_filename)
+
+    def test_cyclops_stale_index_reconciliation_and_migration(self):
+        """Regression test for Issue 1B:
+        Reproduces the exact Cyclops index failure state:
+        - .asset_index.json contains a stale record pointing to non-existent Assets/...
+        - .asset_index.json contains a live record pointing to existing References/...
+        - Knowledge document has a relationship with the stale asset ID and Assets/... path.
+        Verifies:
+        - Stale record is not returned as Available
+        - Live References record is found and returned
+        - RelationshipChip status becomes Available with category References
+        - Knowledge relationship is migrated to live asset ID/path
+        - NavigationPayload points to references section
+        - WorkspaceManager opens References, selects the exact image
+        - Inspector displays the image
+        - No duplicate relationships are created
+        """
+        stale_id = "-3018712308071128280"
+        live_id = "-1754921827663742618"
+        stale_abs = str(self.cyclops_dir / "Assets" / self.image_filename)
+        live_abs = str(self.cyclops_dir / "References" / self.image_filename)
+
+        # Inject stale and live entries into Cyclops asset index
+        stale_entry = {
+            "id": stale_id,
+            "filename": self.image_filename,
+            "relative_path": f"Assets/{self.image_filename}",
+            "absolute_path": stale_abs,
+            "category": "References",
+            "friendly_type": "PNG Image",
+            "size": 2321393,
+            "favorite": False,
+            "tags": [],
+            "notes": "",
+        }
+        live_entry = {
+            "id": live_id,
+            "filename": self.image_filename,
+            "relative_path": f"References/{self.image_filename}",
+            "absolute_path": live_abs,
+            "category": "References",
+            "friendly_type": "PNG Image",
+            "size": 2321393,
+            "favorite": False,
+            "tags": [],
+            "notes": "",
+        }
+        self.asset_svc._indices[self.cyclops_proj.location] = [stale_entry, live_entry]
+        self.asset_svc._save_index(self.cyclops_proj)
+
+        # Create Knowledge document with stale reference record
+        doc = self.knowledge_svc.create_document(title="DaddyPNB", content="Concept note")
+        doc.project_asset_refs = [
+            {
+                "project_id": "Cyclops",
+                "asset_id": stale_id,
+                "relative_path": f"Assets/{self.image_filename}",
+                "category": "References",
+            }
+        ]
+        self.knowledge_svc._persist_document(doc)
+
+        # 1. Verify AssetService.get_asset prefers the live physical file over stale record
+        resolved_entry = self.asset_svc.get_asset(self.cyclops_proj, stale_id)
+        self.assertIsNotNone(resolved_entry)
+        self.assertEqual(resolved_entry["id"], live_id)
+        self.assertEqual(resolved_entry["relative_path"], f"References/{self.image_filename}")
+        self.assertEqual(resolved_entry["category"], "References")
+
+        # 2. Verify RelationshipChip resolution succeeds with Available and References category
+        chip = RelationshipChip("project_asset", doc.project_asset_refs[0], context=self.context)
+        icon, title, status, color = chip._resolve_entity_info()
+        self.assertEqual(status, "Available")
+        self.assertEqual(color, "#10B981")
+        self.assertEqual(icon, "🖼️")
+        self.assertIn(self.image_filename, title)
+
+        # 3. Verify Knowledge document relationship was migrated in-place to live ID and path
+        refreshed_doc = self.knowledge_svc.get_document(doc.id)
+        self.assertEqual(len(refreshed_doc.project_asset_refs), 1)
+        migrated_ref = refreshed_doc.project_asset_refs[0]
+        self.assertEqual(migrated_ref["asset_id"], live_id)
+        self.assertEqual(migrated_ref["relative_path"], f"References/{self.image_filename}")
+        self.assertEqual(migrated_ref["category"], "References")
+
+        # 4. Verify clicking the chip constructs payload pointing to References
+        payload = NavigationPayload.for_project_asset(
+            chip.data.get("project_id", ""),
+            chip.data.get("asset_id", "") or chip.data.get("relative_path", ""),
+            rel_path=chip.data.get("relative_path"),
+            category=chip.data.get("category"),
+            metadata=chip.data,
+        )
+        self.assertEqual(payload.section, "references")
+        self.assertEqual(payload.rel_path, "References")
+
+        # 5. Verify WorkspaceManager navigates to References and selects exact image
+        nav_success = self.wm.navigate(payload)
+        self.assertTrue(nav_success)
+        self.assertEqual(self.context.current_project.name, "Cyclops")
+        self.assertEqual(self.workspace_panel._current_section, "references")
+        self.assertNotEqual(self.workspace_panel._current_section, "assets")
+
+        # Verify selected card in AssetWorkspacePanel
+        asset_wp = self.workspace_panel.asset_workspace
+        selected_ids = asset_wp.get_selected_ids()
+        self.assertTrue(len(selected_ids) > 0)
+        selected_card = asset_wp._cards.get(next(iter(selected_ids)))
+        self.assertIsNotNone(selected_card)
+        self.assertEqual(selected_card.asset["filename"], self.image_filename)
+
+        # Verify Inspector is displaying the exact asset
+        self.assertIsNotNone(self.inspector_panel._current_inspectable)
+        self.assertEqual(self.inspector_panel._current_inspectable.get_display_name(), self.image_filename)
+
+        # Verify no duplicate relationships exist
+        final_doc = self.knowledge_svc.get_document(doc.id)
+        self.assertEqual(len(final_doc.project_asset_refs), 1)
+
     def test_acceptance_scenario_b_library_asset_navigation(self):
         """Acceptance Test B:
         Knowledge note -> global Library relationship -> opens Asset Library,

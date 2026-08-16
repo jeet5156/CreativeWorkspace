@@ -653,6 +653,7 @@ class KnowledgeService(QObject):
         project_id: str,
         asset_id: str,
         relative_path: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> Optional[KnowledgeDocument]:
         """Associate a Knowledge document with a project-local asset (idempotent)."""
         doc = self._documents.get(document_id)
@@ -664,19 +665,43 @@ class KnowledgeService(QObject):
         if not proj_clean or not asset_clean:
             return doc
 
-        # Check if already referenced
-        existing = next(
-            (ref for ref in doc.project_asset_refs if ref.get("project_id") == proj_clean and ref.get("asset_id") == asset_clean),
-            None
-        )
-
         rel_path_clean = relative_path.strip().replace("\\", "/") if relative_path else ""
+
+        # Derive category
+        category_clean = (category or "").strip()
+        if not category_clean and rel_path_clean:
+            top_part = rel_path_clean.split("/")[0] if "/" in rel_path_clean else rel_path_clean
+            category_clean = top_part.capitalize()
+        if not category_clean:
+            category_clean = "Assets"
+
+        # Check if already referenced (match by project_id and asset_id OR matching relative_path OR matching filename in same project)
+        def _matches(ref: Dict[str, Any]) -> bool:
+            if ref.get("project_id", "").lower() != proj_clean.lower():
+                return False
+            ref_aid = str(ref.get("asset_id", "")).strip()
+            ref_rp = str(ref.get("relative_path", "")).strip().replace("\\", "/")
+            if ref_aid and ref_aid == asset_clean:
+                return True
+            if rel_path_clean and ref_rp and ref_rp.lower() == rel_path_clean.lower():
+                return True
+            if rel_path_clean and ref_aid and (ref_aid.lower() == rel_path_clean.lower() or ref_rp.lower() == asset_clean.lower()):
+                return True
+            if rel_path_clean and ref_rp and Path(ref_rp).name.lower() == Path(rel_path_clean).name.lower():
+                ref_cat = (ref.get("category") or ref_rp.split("/")[0]).lower()
+                new_cat = category_clean.lower()
+                if ref_cat == new_cat:
+                    return True
+            return False
+
+        existing = next((ref for ref in doc.project_asset_refs if _matches(ref)), None)
 
         if not existing:
             new_ref = {
                 "project_id": proj_clean,
                 "asset_id": asset_clean,
                 "relative_path": rel_path_clean,
+                "category": category_clean,
             }
             doc.project_asset_refs.append(new_ref)
             doc.modified = datetime.now().isoformat()
@@ -687,16 +712,25 @@ class KnowledgeService(QObject):
                 self.document_updated.emit(doc)
             except Exception:
                 pass
-        elif rel_path_clean and existing.get("relative_path") != rel_path_clean:
-            # Update path hint if changed
-            existing["relative_path"] = rel_path_clean
-            doc.modified = datetime.now().isoformat()
-            self._persist_document(doc)
+        else:
+            changed = False
+            if rel_path_clean and existing.get("relative_path") != rel_path_clean:
+                existing["relative_path"] = rel_path_clean
+                changed = True
+            if category_clean and existing.get("category") != category_clean:
+                existing["category"] = category_clean
+                changed = True
+            if asset_clean and existing.get("asset_id") != asset_clean:
+                existing["asset_id"] = asset_clean
+                changed = True
 
-            try:
-                self.document_updated.emit(doc)
-            except Exception:
-                pass
+            if changed:
+                doc.modified = datetime.now().isoformat()
+                self._persist_document(doc)
+                try:
+                    self.document_updated.emit(doc)
+                except Exception:
+                    pass
 
         return doc
 
@@ -712,12 +746,22 @@ class KnowledgeService(QObject):
             return None
 
         proj_clean = project_id.strip()
-        asset_clean = asset_id.strip()
+        asset_clean = asset_id.strip().replace("\\", "/")
 
-        matching = [
-            ref for ref in doc.project_asset_refs
-            if ref.get("project_id") == proj_clean and ref.get("asset_id") == asset_clean
-        ]
+        def _matches(ref: Dict[str, Any]) -> bool:
+            if ref.get("project_id", "").lower() != proj_clean.lower():
+                return False
+            ref_aid = str(ref.get("asset_id", "")).strip()
+            ref_rp = str(ref.get("relative_path", "")).strip().replace("\\", "/")
+            if ref_aid and ref_aid == asset_clean:
+                return True
+            if ref_rp and ref_rp.lower() == asset_clean.lower():
+                return True
+            if ref_rp and Path(ref_rp).name.lower() == Path(asset_clean).name.lower():
+                return True
+            return False
+
+        matching = [ref for ref in doc.project_asset_refs if _matches(ref)]
 
         if matching:
             for m in matching:
@@ -733,6 +777,72 @@ class KnowledgeService(QObject):
 
         return doc
 
+    def reconcile_project_asset_relationship(
+        self,
+        document_id: Optional[str],
+        project_id: str,
+        stale_asset_id_or_path: str,
+        live_entry: Dict[str, Any],
+    ) -> List[KnowledgeDocument]:
+        """Reconcile and migrate stale project asset relationships across Knowledge documents to live asset metadata."""
+        if not project_id or not live_entry:
+            return []
+
+        proj_clean = project_id.strip()
+        stale_clean = str(stale_asset_id_or_path or "").strip().replace("\\", "/")
+        live_id = str(live_entry.get("id", "")).strip()
+        live_rp = str(live_entry.get("relative_path", "")).strip().replace("\\", "/")
+        live_cat = live_entry.get("category") or (live_rp.split("/")[0] if "/" in live_rp else "Assets")
+
+        target_docs = [self._documents[document_id]] if (document_id and document_id in self._documents) else list(self._documents.values())
+        updated_docs = []
+
+        def _matches(ref: Dict[str, Any]) -> bool:
+            if ref.get("project_id", "").lower() != proj_clean.lower():
+                return False
+            ref_aid = str(ref.get("asset_id", "")).strip()
+            ref_rp = str(ref.get("relative_path", "")).strip().replace("\\", "/")
+            if stale_clean and (ref_aid == stale_clean or ref_rp.lower() == stale_clean.lower() or Path(ref_rp).name.lower() == Path(stale_clean).name.lower()):
+                return True
+            if live_id and ref_aid == live_id:
+                return True
+            if live_rp and (ref_rp.lower() == live_rp.lower() or Path(ref_rp).name.lower() == Path(live_rp).name.lower()):
+                return True
+            return False
+
+        for doc in target_docs:
+            matching = [ref for ref in doc.project_asset_refs if _matches(ref)]
+            if not matching:
+                continue
+
+            changed = False
+            # Deduplicate if multiple matches exist
+            primary_ref = matching[0]
+            for extra in matching[1:]:
+                doc.project_asset_refs.remove(extra)
+                changed = True
+
+            if live_id and primary_ref.get("asset_id") != live_id:
+                primary_ref["asset_id"] = live_id
+                changed = True
+            if live_rp and primary_ref.get("relative_path") != live_rp:
+                primary_ref["relative_path"] = live_rp
+                changed = True
+            if live_cat and primary_ref.get("category") != live_cat:
+                primary_ref["category"] = live_cat
+                changed = True
+
+            if changed:
+                doc.modified = datetime.now().isoformat()
+                self._persist_document(doc)
+                try:
+                    self.document_updated.emit(doc)
+                except Exception:
+                    pass
+                updated_docs.append(doc)
+
+        return updated_docs
+
     def get_related_project_assets(self, document_id: str) -> List[Dict[str, Any]]:
         """Get all Project Asset references associated with a Knowledge document."""
         doc = self._documents.get(document_id)
@@ -743,14 +853,27 @@ class KnowledgeService(QObject):
     def find_documents_for_project_asset(self, project_id: str, asset_id: str) -> List[KnowledgeDocument]:
         """Reverse lookup: find all Knowledge documents referencing a specific project asset."""
         proj_clean = project_id.strip()
-        asset_clean = asset_id.strip()
+        asset_clean = asset_id.strip().replace("\\", "/")
         if not proj_clean or not asset_clean:
             return []
+
+        def _matches(ref: Dict[str, Any]) -> bool:
+            if ref.get("project_id", "").lower() != proj_clean.lower():
+                return False
+            ref_aid = str(ref.get("asset_id", "")).strip()
+            ref_rp = str(ref.get("relative_path", "")).strip().replace("\\", "/")
+            if ref_aid and ref_aid == asset_clean:
+                return True
+            if ref_rp and ref_rp.lower() == asset_clean.lower():
+                return True
+            if ref_rp and Path(ref_rp).name.lower() == Path(asset_clean).name.lower():
+                return True
+            return False
 
         results = []
         for d in self._documents.values():
             for ref in d.project_asset_refs:
-                if ref.get("project_id") == proj_clean and ref.get("asset_id") == asset_clean:
+                if _matches(ref):
                     results.append(d)
                     break
         return results
