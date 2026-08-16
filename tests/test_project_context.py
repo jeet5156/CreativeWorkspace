@@ -134,6 +134,55 @@ class TestProjectContext(unittest.TestCase):
         self.assertIn("Vehicle Design", recent_titles)
         self.assertNotIn("Unrelated Note", recent_titles)
 
+    def test_03b_knowledge_relationships_via_project_asset_refs(self):
+        """Test Knowledge notes linked only via project_asset_refs (Cyclops pattern) are aggregated into context."""
+        # Note linked ONLY to a project asset (References image)
+        doc_asset_only = self.knowledge_service.create_document(
+            title="Cyclops Reference Note",
+            content="Details about reference image",
+            favorite=True,
+            project_asset_refs=[{
+                "project_id": "CyberRacer",
+                "asset_id": "-1754921827663742618",
+                "relative_path": "References/ref_img.png",
+                "category": "References"
+            }]
+        )
+
+        # Note linked with both direct project and asset ref
+        doc_both = self.knowledge_service.create_document(
+            title="Cyber Track Layout",
+            content="Track blueprint",
+            favorite=False,
+            project_ids=["CyberRacer"],
+            project_asset_refs=[{
+                "project_id": "CyberRacer",
+                "asset_id": "track_model_1",
+                "relative_path": "Assets/track.obj",
+                "category": "Assets"
+            }]
+        )
+
+        # Unrelated note for another project
+        doc_other = self.knowledge_service.create_document(
+            title="Other Project Note",
+            content="Other notes",
+            project_asset_refs=[{
+                "project_id": "UnrelatedProject",
+                "asset_id": "other_asset",
+                "relative_path": "Assets/other.png",
+                "category": "Assets"
+            }]
+        )
+
+        ctx = self.service.get_project_context(self.project)
+        self.assertEqual(ctx.knowledge_summary.total_notes, 2)
+        self.assertEqual(ctx.knowledge_summary.favorite_notes, 1)
+        recent_titles = [n["title"] for n in ctx.knowledge_summary.recent_notes]
+        self.assertIn("Cyclops Reference Note", recent_titles)
+        self.assertIn("Cyber Track Layout", recent_titles)
+        self.assertNotIn("Other Project Note", recent_titles)
+
     # -------------------------------------------------------------------------
     # 4. Project Assets Included
     # -------------------------------------------------------------------------

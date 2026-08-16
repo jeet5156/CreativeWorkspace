@@ -582,11 +582,52 @@ class KnowledgeService(QObject):
         return list(doc.project_ids)
 
     def find_documents_for_project(self, project_id: str) -> List[KnowledgeDocument]:
-        """Reverse lookup: find all Knowledge documents referencing a Project."""
+        """Reverse lookup: find all Knowledge documents referencing a Project via project_ids or project_asset_refs."""
         project_id_clean = project_id.strip()
         if not project_id_clean:
             return []
-        return [d for d in self._documents.values() if project_id_clean in d.project_ids]
+
+        target_lower = project_id_clean.lower()
+        target_norm = project_id_clean.replace("\\", "/").rstrip("/").lower()
+        target_base = Path(target_norm).name.lower()
+
+        def _matches_project(cand: Any) -> bool:
+            if not cand or not isinstance(cand, str):
+                return False
+            cand_clean = cand.strip()
+            if not cand_clean:
+                return False
+            cand_lower = cand_clean.lower()
+            if cand_lower == target_lower:
+                return True
+            cand_norm = cand_clean.replace("\\", "/").rstrip("/").lower()
+            if cand_norm == target_norm:
+                return True
+            cand_base = Path(cand_norm).name.lower()
+            if cand_base == target_base or cand_base == target_lower or cand_lower == target_base:
+                return True
+            return False
+
+        matching_docs: List[KnowledgeDocument] = []
+        for d in self._documents.values():
+            matched = False
+            # 1. Match against explicit project_ids
+            for pid in getattr(d, "project_ids", []):
+                if _matches_project(pid):
+                    matched = True
+                    break
+
+            # 2. Match against project_asset_refs
+            if not matched:
+                for ref in getattr(d, "project_asset_refs", []):
+                    if isinstance(ref, dict) and _matches_project(ref.get("project_id")):
+                        matched = True
+                        break
+
+            if matched:
+                matching_docs.append(d)
+
+        return matching_docs
 
     # 2. Global Library Asset Relationships
     def add_library_asset_relationship(self, document_id: str, asset_id: str) -> Optional[KnowledgeDocument]:

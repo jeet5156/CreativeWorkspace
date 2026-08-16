@@ -52,14 +52,51 @@ class TestKnowledgeRelationships(unittest.TestCase):
         self.assertEqual(self.service.get_related_projects(doc.id), [proj_id_2])
 
     def test_project_reverse_lookup(self):
-        """Verify finding documents by associated project ID."""
+        """Verify finding documents by associated project ID via project_ids and project_asset_refs."""
+        # 1. Explicit project_ids
         doc1 = self.service.create_document(title="Doc 1", project_ids=["ProjectAlpha", "OtherProject"])
         doc2 = self.service.create_document(title="Doc 2", project_ids=["ProjectAlpha"])
         doc3 = self.service.create_document(title="Doc 3", project_ids=["OtherProject"])
 
+        # 2. Project asset refs only (Cyclops pattern)
+        doc_asset_only = self.service.create_document(
+            title="Asset Note Only",
+            project_asset_refs=[{
+                "project_id": "ProjectAlpha",
+                "asset_id": "asset_xyz",
+                "relative_path": "References/ref_img.png",
+                "category": "References"
+            }]
+        )
+
+        # 3. Both project_ids and project_asset_refs on same document
+        doc_both = self.service.create_document(
+            title="Both Relationships Note",
+            project_ids=["ProjectAlpha"],
+            project_asset_refs=[{
+                "project_id": "ProjectAlpha",
+                "asset_id": "asset_abc",
+                "relative_path": "Assets/model.fbx",
+                "category": "Assets"
+            }]
+        )
+
+        # Basic lookup for ProjectAlpha
         res = self.service.find_documents_for_project("ProjectAlpha")
-        self.assertEqual(len(res), 2)
-        self.assertEqual({d.id for d in res}, {doc1.id, doc2.id})
+        self.assertEqual(len(res), 4)
+        self.assertEqual({d.id for d in res}, {doc1.id, doc2.id, doc_asset_only.id, doc_both.id})
+
+        # Case-insensitive lookup
+        res_lower = self.service.find_documents_for_project("projectalpha")
+        self.assertEqual(len(res_lower), 4)
+
+        # Project path / location lookup
+        res_path = self.service.find_documents_for_project("D:/Projects/ProjectAlpha")
+        self.assertEqual(len(res_path), 4)
+
+        # Unrelated project lookup
+        res_unrelated = self.service.find_documents_for_project("NonExistentProject")
+        self.assertEqual(len(res_unrelated), 0)
 
     def test_project_relationship_persistence_and_reload(self):
         """Verify project relationships survive service restarts and reloads."""
