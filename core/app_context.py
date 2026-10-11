@@ -78,6 +78,13 @@ class AppContext:
         except Exception:
             self.knowledge_service = None
 
+        # Markup Service
+        try:
+            from services.markup_service import MarkupService
+            self.markup_service = MarkupService()
+        except Exception:
+            self.markup_service = None
+
         # AI Service
         try:
             from services.ai_service import AIService

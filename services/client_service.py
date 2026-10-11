@@ -1,12 +1,13 @@
 import os
-import json
 from pathlib import Path
 from dataclasses import asdict
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 from PySide6.QtCore import QObject, Signal
 
 from models.client import Client, ClientContact, ClientActivity, CLIENT_STATUSES, CLIENT_TYPES
+from core.paths import get_shared_clients_dir
+from core.storage import atomic_write_json, safe_read_json
 
 
 class ClientService(QObject):
@@ -19,21 +20,43 @@ class ClientService(QObject):
     project_assigned = Signal(str, str)  # (project_id, client_id)
     project_removed = Signal(str, str)   # (project_id, client_id)
 
-    def __init__(self, workspace_location: Optional[str] = None):
+    def __init__(
+        self,
+        workspace_location: Optional[str] = None,
+        storage_dir: Optional[Union[str, Path]] = None,
+    ):
         super().__init__()
+        self.storage_dir: Optional[Path] = Path(storage_dir).resolve() if storage_dir else None
         self.workspace_location: Optional[str] = workspace_location
         self.clients: List[Client] = []
 
-        if workspace_location:
-            self.load_clients(workspace_location)
+        if self.storage_dir or self.workspace_location:
+            self.load_clients()
+        else:
+            # Default to shared data directory (<APP_ROOT>/data/clients)
+            self.load_clients()
 
     def set_workspace_location(self, workspace_location: str):
         self.workspace_location = workspace_location
-        self.load_clients(workspace_location)
+        self.storage_dir = None
+        self.load_clients()
+
+    def set_storage_dir(self, storage_dir: Union[str, Path]):
+        self.storage_dir = Path(storage_dir).resolve()
+        self.load_clients()
 
     def _get_clients_dir(self, workspace_loc: Optional[str] = None) -> Path:
-        base = workspace_loc or self.workspace_location or os.getcwd()
-        path = Path(base) / ".creativeworkspace" / "clients"
+        if self.storage_dir and not workspace_loc:
+            path = self.storage_dir
+        elif workspace_loc:
+            # Legacy workspace location override
+            path = Path(workspace_loc) / ".creativeworkspace" / "clients"
+        elif self.workspace_location:
+            path = Path(self.workspace_location) / ".creativeworkspace" / "clients"
+        else:
+            # Default dynamic portable shared location (<APP_ROOT>/data/clients)
+            path = get_shared_clients_dir()
+
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -41,51 +64,54 @@ class ClientService(QObject):
         clients_dir = self._get_clients_dir(workspace_loc)
         loaded = []
 
+        if not clients_dir.exists():
+            self.clients = []
+            return self.clients
+
         for client_folder in clients_dir.iterdir():
             if client_folder.is_dir():
                 client_json = client_folder / "client.json"
                 if client_json.exists():
-                    try:
-                        with open(client_json, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                    data, err = safe_read_json(client_json)
+                    if err or not isinstance(data, dict):
+                        continue
 
-                        contacts_list = []
-                        contacts_json = client_folder / "contacts.json"
-                        if contacts_json.exists():
-                            with open(contacts_json, "r", encoding="utf-8") as cf:
-                                cdata = json.load(cf)
-                                for c in cdata:
+                    contacts_list = []
+                    contacts_json = client_folder / "contacts.json"
+                    if contacts_json.exists():
+                        cdata, cerr = safe_read_json(contacts_json)
+                        if not cerr and isinstance(cdata, list):
+                            for c in cdata:
+                                if isinstance(c, dict):
                                     contacts_list.append(ClientContact(
                                         name=c.get("name", ""),
                                         role=c.get("role", ""),
                                         email=c.get("email", ""),
-                                        notes=c.get("notes", "")
+                                        notes=c.get("notes", ""),
                                     ))
 
-                        created_dt = datetime.fromisoformat(data.get("created")) if data.get("created") else datetime.now()
-                        modified_dt = datetime.fromisoformat(data.get("modified")) if data.get("modified") else datetime.now()
+                    created_dt = datetime.fromisoformat(data.get("created")) if data.get("created") else datetime.now()
+                    modified_dt = datetime.fromisoformat(data.get("modified")) if data.get("modified") else datetime.now()
 
-                        client = Client(
-                            id=data.get("id", client_folder.name),
-                            name=data.get("name", ""),
-                            company=data.get("company", ""),
-                            role=data.get("role", ""),
-                            status=data.get("status", "Active"),
-                            priority=data.get("priority", "Medium"),
-                            client_type=data.get("client_type", "Game Studio"),
-                            industry=data.get("industry", ""),
-                            website=data.get("website", ""),
-                            country=data.get("country", ""),
-                            tags=data.get("tags", []),
-                            notes=data.get("notes", ""),
-                            project_ids=data.get("project_ids", []),
-                            contacts=contacts_list,
-                            created=created_dt,
-                            modified=modified_dt,
-                        )
-                        loaded.append(client)
-                    except Exception:
-                        pass
+                    client = Client(
+                        id=data.get("id", client_folder.name),
+                        name=data.get("name", ""),
+                        company=data.get("company", ""),
+                        role=data.get("role", ""),
+                        status=data.get("status", "Active"),
+                        priority=data.get("priority", "Medium"),
+                        client_type=data.get("client_type", "Game Studio"),
+                        industry=data.get("industry", ""),
+                        website=data.get("website", ""),
+                        country=data.get("country", ""),
+                        tags=data.get("tags", []) if isinstance(data.get("tags"), list) else [],
+                        notes=data.get("notes", ""),
+                        project_ids=data.get("project_ids", []) if isinstance(data.get("project_ids"), list) else [],
+                        contacts=contacts_list,
+                        created=created_dt,
+                        modified=modified_dt,
+                    )
+                    loaded.append(client)
 
         self.clients = loaded
         return self.clients
@@ -174,12 +200,10 @@ class ClientService(QObject):
             "modified": client.modified.isoformat() if isinstance(client.modified, datetime) else str(client.modified),
         }
 
-        with open(client_folder / "client.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        atomic_write_json(client_folder / "client.json", data)
 
         contacts_data = [asdict(c) for c in client.contacts]
-        with open(client_folder / "contacts.json", "w", encoding="utf-8") as f:
-            json.dump(contacts_data, f, indent=2)
+        atomic_write_json(client_folder / "contacts.json", contacts_data)
 
         try:
             self.client_updated.emit(client)

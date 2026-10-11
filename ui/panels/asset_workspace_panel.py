@@ -553,6 +553,17 @@ class AssetWorkspacePanel(QWidget):
             remove_ref_action.triggered.connect(lambda: self._remove_reference_from_project(asset_id))
             menu.addAction(remove_ref_action)
 
+            # Annotate / Markup for images
+            card = self._cards.get(self._last_selected_id)
+            if card and card.asset:
+                filename = card.asset.get("filename") or card.asset.get("relative_path") or ""
+                ext = Path(filename).suffix.lower()
+                if ext in {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tga', '.tif', '.tiff', '.hdr', '.exr', '.gif'}:
+                    annotate_action = QAction("✏ Annotate / Markup...", self)
+                    annotate_action.setStatusTip("Open visual markup canvas for non-destructive annotations on this image.")
+                    annotate_action.triggered.connect(lambda: self._open_asset_markup(self._last_selected_id))
+                    menu.addAction(annotate_action)
+
             menu.addSeparator()
 
             properties_action = QAction("Properties", self)
@@ -563,6 +574,18 @@ class AssetWorkspacePanel(QWidget):
             open_action = QAction("Open", self)
             open_action.triggered.connect(lambda: [self._context.asset_service.open_asset(self._project, aid) for aid in sel])
             menu.addAction(open_action)
+
+            # Annotate / Markup for single image selection
+            if len(sel) == 1 and self._last_selected_id:
+                card = self._cards.get(self._last_selected_id)
+                if card and card.asset:
+                    filename = card.asset.get("filename") or card.asset.get("relative_path") or ""
+                    ext = Path(filename).suffix.lower()
+                    if ext in {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tga', '.tif', '.tiff', '.hdr', '.exr', '.gif'}:
+                        annotate_action = QAction("✏ Annotate / Markup...", self)
+                        annotate_action.setStatusTip("Open visual markup canvas for non-destructive annotations on this image.")
+                        annotate_action.triggered.connect(lambda: self._open_asset_markup(self._last_selected_id))
+                        menu.addAction(annotate_action)
 
             open_folder = QAction("Open Containing Folder", self)
             open_folder.triggered.connect(lambda: [self._context.asset_service.open_containing_folder(self._project, aid) for aid in sel])
@@ -965,7 +988,49 @@ class AssetWorkspacePanel(QWidget):
         if not entry:
             return
         info = f"Filename: {entry['filename']}\nType: {entry['friendly_type']}\nCategory: {entry['category']}\nAdded: {entry['date_added']}\nPath: {entry['relative_path']}"
-        QMessageBox.information(self, "Properties", info)
+        QMessageBox.information(self, "Asset Properties", info)
+
+    def _open_asset_markup(self, asset_id: str):
+        """Open MarkupEditorDialog for the selected image asset."""
+        if not asset_id or not self._project:
+            return
+
+        from ui.dialogs.markup_editor_dialog import MarkupEditorDialog
+
+        card = self._cards.get(asset_id)
+        if not card:
+            return
+        asset = card.asset
+
+        # Check if Library reference
+        if asset.get("is_library_reference"):
+            lib_svc = getattr(self._context, "library_service", None) if self._context else None
+            markup_svc = getattr(self._context, "markup_service", None) if self._context else None
+            dlg = MarkupEditorDialog.open_for_library_asset(
+                asset,
+                library_service=lib_svc,
+                markup_service=markup_svc,
+                context=self._context,
+                parent=self,
+            )
+            if dlg:
+                dlg.exec()
+            return
+
+        # Regular project asset
+        asset_svc = getattr(self._context, "asset_service", None) if self._context else None
+        markup_svc = getattr(self._context, "markup_service", None) if self._context else None
+        dlg = MarkupEditorDialog.open_for_project_asset(
+            self._project,
+            asset_id,
+            asset_service=asset_svc,
+            markup_service=markup_svc,
+            context=self._context,
+            parent=self,
+        )
+        if dlg:
+            dlg.exec()
+
         try:
             self._context.activity_service.record('view_asset_properties', {'project': self._project.location, 'asset_id': asset_id})
         except Exception:

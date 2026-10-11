@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from PySide6.QtCore import QObject, Signal
+from core.paths import get_shared_library_dir
+from core.storage import atomic_write_json, safe_read_json
 from models.library_models import AssetAvailability, LibraryAsset, LibraryDrive, LibraryLocation
 from services.drive_detection_service import DriveDetectionService
 from core.asset_intelligence import detect_version, detect_lod
@@ -79,7 +81,7 @@ class LibraryService(QObject):
 
     def __init__(self, storage_dir: Optional[Union[str, Path]] = None, drive_detector: Optional[DriveDetectionService] = None):
         super().__init__()
-        self.storage_dir = Path(storage_dir) if storage_dir else Path.home() / ".creativeworkspace" / "library"
+        self.storage_dir = Path(storage_dir) if storage_dir else get_shared_library_dir()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
         self.drive_detector = drive_detector or DriveDetectionService()
@@ -133,27 +135,32 @@ class LibraryService(QObject):
     def _load_storage(self):
         """Load global library config and asset catalog from disk."""
         if self.config_path.exists():
-            try:
-                data = json.loads(self.config_path.read_text(encoding="utf-8"))
+            data, err = safe_read_json(self.config_path)
+            if not err and isinstance(data, dict):
                 for d_data in data.get("drives", []):
-                    d = LibraryDrive.from_dict(d_data)
-                    self._drives[d.drive_id] = d
+                    try:
+                        d = LibraryDrive.from_dict(d_data)
+                        self._drives[d.drive_id] = d
+                    except Exception:
+                        pass
 
                 for l_data in data.get("locations", []):
-                    loc = LibraryLocation.from_dict(l_data)
-                    self._locations[loc.location_id] = loc
-            except Exception:
-                pass
+                    try:
+                        loc = LibraryLocation.from_dict(l_data)
+                        self._locations[loc.location_id] = loc
+                    except Exception:
+                        pass
 
         if self.index_path.exists():
-            try:
-                assets_data = json.loads(self.index_path.read_text(encoding="utf-8"))
+            assets_data, err = safe_read_json(self.index_path)
+            if not err and isinstance(assets_data, list):
                 for a_data in assets_data:
-                    a = LibraryAsset.from_dict(a_data)
-                    self._assets[a.id] = a
-                    self._path_to_asset_id[(a.drive_id, a.drive_relative_path)] = a.id
-            except Exception:
-                pass
+                    try:
+                        a = LibraryAsset.from_dict(a_data)
+                        self._assets[a.id] = a
+                        self._path_to_asset_id[(a.drive_id, a.drive_relative_path)] = a.id
+                    except Exception:
+                        pass
 
         # Refresh drive mount states with known drives
         self.drive_detector.refresh_mounts(self._drives)
@@ -175,19 +182,8 @@ class LibraryService(QObject):
 
     def _atomic_write_json(self, target_path: Path, data: Any):
         """Atomically write JSON data to avoid corruption during unexpected shutdowns."""
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_fd, temp_file = tempfile.mkstemp(dir=str(target_path.parent), prefix="tmp_lib_", suffix=".json")
-        try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            os.replace(temp_file, str(target_path))
-        except Exception:
-            if os.path.exists(temp_file):
-                try:
-                    os.unlink(temp_file)
-                except Exception:
-                    pass
-            raise
+        atomic_write_json(target_path, data)
+
 
     # -------------------------------------------------------------------------
     # Drive and Location Management

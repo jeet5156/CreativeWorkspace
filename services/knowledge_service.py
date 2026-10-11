@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 from PySide6.QtCore import QObject, Signal
 
+from core.paths import get_shared_knowledge_dir
+from core.storage import atomic_write_json, safe_read_json
 from models.knowledge import KnowledgeDocument, KnowledgeFolder
 
 _UNSET = object()
@@ -36,7 +38,7 @@ class KnowledgeService(QObject):
         if storage_dir:
             self.storage_dir = Path(storage_dir)
         else:
-            self.storage_dir = Path.home() / ".creativeworkspace" / "knowledge"
+            self.storage_dir = get_shared_knowledge_dir()
 
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.docs_dir = self.storage_dir / "documents"
@@ -61,23 +63,26 @@ class KnowledgeService(QObject):
 
         # 1. Load folders
         if self.folders_file.exists():
-            try:
-                folders_data = json.loads(self.folders_file.read_text(encoding="utf-8"))
+            folders_data, err = safe_read_json(self.folders_file)
+            if not err and isinstance(folders_data, list):
                 for item in folders_data:
-                    fld = KnowledgeFolder.from_dict(item)
-                    self._folders[fld.id] = fld
-            except Exception:
-                pass
+                    if isinstance(item, dict):
+                        try:
+                            fld = KnowledgeFolder.from_dict(item)
+                            self._folders[fld.id] = fld
+                        except Exception:
+                            pass
 
         # 2. Load individual document files from docs_dir
         if self.docs_dir.exists():
             for doc_path in self.docs_dir.glob("*.json"):
-                try:
-                    doc_data = json.loads(doc_path.read_text(encoding="utf-8"))
-                    doc = KnowledgeDocument.from_dict(doc_data)
-                    self._documents[doc.id] = doc
-                except Exception:
-                    pass
+                doc_data, err = safe_read_json(doc_path)
+                if not err and isinstance(doc_data, dict):
+                    try:
+                        doc = KnowledgeDocument.from_dict(doc_data)
+                        self._documents[doc.id] = doc
+                    except Exception:
+                        pass
 
         try:
             self.knowledge_reloaded.emit()
@@ -86,19 +91,7 @@ class KnowledgeService(QObject):
 
     def _atomic_write_json(self, target_path: Path, data: Any):
         """Atomically write JSON data to avoid corruption during unexpected interrupts."""
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_fd, temp_file = tempfile.mkstemp(dir=str(target_path.parent), prefix="tmp_k_", suffix=".json")
-        try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            os.replace(temp_file, str(target_path))
-        except Exception:
-            if os.path.exists(temp_file):
-                try:
-                    os.unlink(temp_file)
-                except Exception:
-                    pass
-            raise
+        atomic_write_json(target_path, data)
 
     def _persist_folders(self):
         """Save folder hierarchy atomically."""
@@ -109,6 +102,7 @@ class KnowledgeService(QObject):
         """Save a single document atomically."""
         doc_path = self.docs_dir / f"{doc.id}.json"
         self._atomic_write_json(doc_path, doc.to_dict())
+
 
     def _remove_document_file(self, doc_id: str):
         """Remove a document file from storage."""

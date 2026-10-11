@@ -962,6 +962,7 @@ class KnowledgeWorkspacePanel(QWidget):
             chip = RelationshipChip("library_asset", {"asset_id": asset_id}, context=self._context)
             chip.clicked.connect(self._on_relationship_chip_clicked)
             chip.remove_requested.connect(self._on_relationship_chip_removed)
+            chip.markup_requested.connect(self._on_relationship_markup_requested)
             self.rel_chips_layout.addWidget(chip)
 
         # 3. Project Assets
@@ -969,6 +970,7 @@ class KnowledgeWorkspacePanel(QWidget):
             chip = RelationshipChip("project_asset", ref, context=self._context)
             chip.clicked.connect(self._on_relationship_chip_clicked)
             chip.remove_requested.connect(self._on_relationship_chip_removed)
+            chip.markup_requested.connect(self._on_relationship_markup_requested)
             self.rel_chips_layout.addWidget(chip)
 
         # 4. Lab Nodes
@@ -977,6 +979,51 @@ class KnowledgeWorkspacePanel(QWidget):
             chip.clicked.connect(self._on_relationship_chip_clicked)
             chip.remove_requested.connect(self._on_relationship_chip_removed)
             self.rel_chips_layout.addWidget(chip)
+
+    def _on_relationship_markup_requested(self, rel_type: str, data: dict):
+        """Open MarkupEditorDialog for an image asset linked to the current Knowledge document."""
+        from ui.dialogs.markup_editor_dialog import MarkupEditorDialog
+
+        markup_svc = getattr(self._context, "markup_service", None) if self._context else None
+
+        if rel_type == "project_asset":
+            proj_id = data.get("project_id", "")
+            asset_id = data.get("asset_id", "") or data.get("relative_path", "")
+            proj_svc = getattr(self._context, "project_service", None) if self._context else None
+            asset_svc = getattr(self._context, "asset_service", None) if self._context else None
+            if not proj_svc or not asset_svc:
+                return
+            project = next((p for p in proj_svc.all_projects() if p.name == proj_id or getattr(p, "location", "") == proj_id), None)
+            if not project:
+                return
+            dlg = MarkupEditorDialog.open_for_project_asset(
+                project,
+                asset_id,
+                asset_service=asset_svc,
+                markup_service=markup_svc,
+                context=self._context,
+                parent=self,
+            )
+            if dlg:
+                dlg.exec()
+
+        elif rel_type == "library_asset":
+            asset_id = data.get("asset_id", "") or data.get("library_asset_id", "")
+            lib_svc = getattr(self._context, "library_service", None) if self._context else None
+            if not lib_svc:
+                return
+            asset = lib_svc.get_asset(asset_id)
+            if not asset:
+                return
+            dlg = MarkupEditorDialog.open_for_library_asset(
+                asset.to_dict(),
+                library_service=lib_svc,
+                markup_service=markup_svc,
+                context=self._context,
+                parent=self,
+            )
+            if dlg:
+                dlg.exec()
 
     def _on_add_relationship_clicked(self):
         """Open the Add Knowledge Relationship Dialog and associate selected target."""

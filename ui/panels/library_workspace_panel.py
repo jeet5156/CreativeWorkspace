@@ -1063,7 +1063,16 @@ class LibraryWorkspacePanel(QWidget):
         open_action.triggered.connect(lambda: self._on_card_double_clicked(asset_id))
         menu.addAction(open_action)
 
-        # 2. Reveal in Explorer
+        # 2. Annotate / Markup (for images)
+        ext = Path(asset.filename).suffix.lower()
+        if ext in {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tga', '.tif', '.tiff', '.hdr', '.exr', '.gif'}:
+            annotate_action = QAction("✏ Annotate / Markup...", self)
+            annotate_action.setEnabled(is_online)
+            annotate_action.setStatusTip("Open visual markup canvas for non-destructive annotations on this image.")
+            annotate_action.triggered.connect(lambda: self._open_library_asset_markup(asset_id))
+            menu.addAction(annotate_action)
+
+        # 3. Reveal in Explorer
         reveal_action = QAction("Reveal in Explorer", self)
         reveal_action.setEnabled(is_online)
         reveal_action.triggered.connect(lambda: self._reveal_path(phys_path))
@@ -1291,6 +1300,27 @@ class LibraryWorkspacePanel(QWidget):
     # -------------------------------------------------------------------------
     # Service Helpers
     # -------------------------------------------------------------------------
+
+    def _open_library_asset_markup(self, asset_id: str):
+        """Open MarkupEditorDialog for the selected library image asset."""
+        svc = self._get_library_service()
+        if not svc:
+            return
+        asset = svc.get_asset(asset_id)
+        if not asset:
+            return
+
+        from ui.dialogs.markup_editor_dialog import MarkupEditorDialog
+        markup_svc = getattr(self._context, "markup_service", None) if self._context else None
+        dlg = MarkupEditorDialog.open_for_library_asset(
+            asset.to_dict(),
+            library_service=svc,
+            markup_service=markup_svc,
+            context=self._context,
+            parent=self,
+        )
+        if dlg:
+            dlg.exec()
 
     def _get_library_service(self):
         if self._context and getattr(self._context, "library_service", None):

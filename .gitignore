@@ -16,13 +16,10 @@ env/
 .DS_Store
 Thumbs.db
 
-# User data
+# User and runtime data
 workspace/
 config/
+data/
 
 # Generated cache
-<<<<<<< HEAD
 **/.creativeworkspace/
-=======
-**/.creativeworkspace/
->>>>>>> 3ad3a52 (v0.1.0: Core workspace foundation)

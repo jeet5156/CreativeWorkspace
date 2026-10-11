@@ -613,6 +613,21 @@ class AssetService(QObject):
         """Lookup asset metadata by relative path."""
         return self.get_asset(project, rel_path)
 
+    def get_asset_path(self, project, asset_id_or_path: str) -> Optional[Path]:
+        """Return the physical filesystem Path for an asset entry in a project."""
+        entry = self.get_asset(project, asset_id_or_path)
+        if not entry:
+            return None
+        abs_p = entry.get("absolute_path")
+        if abs_p and Path(abs_p).exists():
+            return Path(abs_p)
+        rel_p = entry.get("relative_path")
+        if rel_p and hasattr(project, "location"):
+            cand = Path(project.location) / rel_p
+            if cand.exists():
+                return cand
+        return None
+
     def add_library_reference(
         self,
         project,

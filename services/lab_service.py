@@ -3,23 +3,38 @@ import uuid
 import copy
 from pathlib import Path
 from datetime import datetime
+from typing import Optional, Union
 from PySide6.QtCore import QObject, Signal
+
+from core.paths import get_shared_workbench_boards_dir
+from core.storage import atomic_write_json, safe_read_json
+
+
 class LabService(QObject):
-    """Manages Lab board persistence (<board_id>.lab.json) and board_manifest.json in <ProjectRoot>/Lab/boards/."""
+    """Manages Lab board persistence (<board_id>.lab.json) and board_manifest.json in <ProjectRoot>/Lab/boards/ or shared Workbench."""
     board_updated = Signal(object, str)
     manifest_updated = Signal(object)
-    def __init__(self, project_service=None, activity_service=None):
+
+    def __init__(
+        self,
+        project_service=None,
+        activity_service=None,
+        global_storage_dir: Optional[Union[str, Path]] = None,
+    ):
         super().__init__()
         self.project_service = project_service
         self.activity_service = activity_service
+        self.global_storage_dir = Path(global_storage_dir).resolve() if global_storage_dir else None
+
     def get_boards_dir(self, project) -> Path:
         if not project or not getattr(project, "location", None):
-            global_dir = Path.home() / ".creativeworkspace" / "workbench" / "boards"
+            global_dir = self.global_storage_dir or get_shared_workbench_boards_dir()
             global_dir.mkdir(parents=True, exist_ok=True)
             return global_dir
         boards_dir = Path(project.location) / "Lab" / "boards"
         boards_dir.mkdir(parents=True, exist_ok=True)
         return boards_dir
+
     def get_manifest_path(self, project) -> Path:
         return self.get_boards_dir(project) / "board_manifest.json"
     def default_manifest_data(self) -> dict:
@@ -91,8 +106,7 @@ class LabService(QObject):
                 board_data = self.default_board_data(main_id, "Main")
                 board_file = boards_dir / f"{main_id}.lab.json"
                 try:
-                    with open(board_file, "w", encoding="utf-8") as f:
-                        json.dump(board_data, f, indent=2)
+                    atomic_write_json(board_file, board_data)
                 except Exception:
                     pass
             manifest["active_board_id"] = main_id
@@ -100,8 +114,12 @@ class LabService(QObject):
             self.save_manifest(project, manifest)
             return manifest
         try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
+            manifest_data, err = safe_read_json(manifest_path)
+            if not err and isinstance(manifest_data, dict):
+                manifest = manifest_data
+            else:
+                manifest = self.default_manifest_data()
+
             if "boards" not in manifest or not isinstance(manifest["boards"], list):
                 manifest["boards"] = []
             if "last_view" not in manifest or not isinstance(manifest["last_view"], dict):
@@ -111,8 +129,10 @@ class LabService(QObject):
                 entry = self.default_board_entry(main_id, "Main", order=0)
                 board_data = self.default_board_data(main_id, "Main")
                 board_file = boards_dir / f"{main_id}.lab.json"
-                with open(board_file, "w", encoding="utf-8") as f:
-                    json.dump(board_data, f, indent=2)
+                try:
+                    atomic_write_json(board_file, board_data)
+                except Exception:
+                    pass
                 manifest["active_board_id"] = main_id
                 manifest["boards"].append(entry)
                 self.save_manifest(project, manifest)
@@ -131,8 +151,7 @@ class LabService(QObject):
     def save_manifest(self, project, manifest: dict) -> bool:
         manifest_path = self.get_manifest_path(project)
         try:
-            with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2)
+            atomic_write_json(manifest_path, manifest)
             self.manifest_updated.emit(project)
             return True
         except Exception:
@@ -172,8 +191,7 @@ class LabService(QObject):
         board_data = self.default_board_data(new_id, entry["name"])
         board_file = self.get_boards_dir(project) / f"{new_id}.lab.json"
         try:
-            with open(board_file, "w", encoding="utf-8") as f:
-                json.dump(board_data, f, indent=2)
+            atomic_write_json(board_file, board_data)
         except Exception:
             pass
         manifest["boards"].append(entry)
@@ -235,8 +253,7 @@ class LabService(QObject):
             item["id"] = str(uuid.uuid4())
         board_file = self.get_boards_dir(project) / f"{new_id}.lab.json"
         try:
-            with open(board_file, "w", encoding="utf-8") as f:
-                json.dump(new_board_data, f, indent=2)
+            atomic_write_json(board_file, new_board_data)
         except Exception:
             pass
         manifest["boards"].append(new_entry)
@@ -282,8 +299,12 @@ class LabService(QObject):
             self.save_board(project, data, board_id_or_name=target_id)
             return data
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            board_data, err = safe_read_json(path)
+            if not err and isinstance(board_data, dict):
+                data = board_data
+            else:
+                data = self.default_board_data(target_id, name)
+
             if "viewport" not in data or not isinstance(data["viewport"], dict):
                 data["viewport"] = self.default_board_data(target_id, name)["viewport"]
             if "items" not in data:
@@ -305,8 +326,7 @@ class LabService(QObject):
         now = datetime.now().isoformat()
         board_data["modified"] = now
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(board_data, f, indent=2)
+            atomic_write_json(path, board_data)
             # Update modified timestamp in manifest
             manifest = self.get_manifest(project)
             for b in manifest.get("boards", []):

@@ -1,35 +1,48 @@
 import json
 from pathlib import Path
 from datetime import datetime
+from typing import Optional, Union
+
+from core.paths import get_local_config_dir
+from core.storage import atomic_write_json, safe_read_json
+
+
 class ActivityService:
     """Record user actions for Recent Activity and analytics.
-    Persists to config/activity.json and keeps an in-memory list.
+    Persists to machine-local config (~/.creativeworkspace/activity.json) and keeps an in-memory list.
     """
     MAX_ENTRIES = 100
-    def __init__(self):
-        self.config_folder = Path("config")
-        self.config_folder.mkdir(exist_ok=True)
-        self._file = self.config_folder / "activity.json"
+
+    def __init__(self, config_folder: Optional[Union[str, Path]] = None, storage_file: Optional[Union[str, Path]] = None):
+        if storage_file:
+            self._file = Path(storage_file)
+            self.config_folder = self._file.parent
+        elif config_folder:
+            self.config_folder = Path(config_folder)
+            self._file = self.config_folder / "activity.json"
+        else:
+            self.config_folder = get_local_config_dir()
+            self._file = self.config_folder / "activity.json"
+
+        self.config_folder.mkdir(parents=True, exist_ok=True)
         self._load()
+
     def _load(self):
         if not self._file.exists():
             self._entries = []
             return
-        try:
-            with open(self._file, "r", encoding="utf-8") as f:
-                self._entries = json.load(f)
-                if isinstance(self._entries, list):
-                    self._entries = self._entries[-self.MAX_ENTRIES:]
-                else:
-                    self._entries = []
-        except Exception:
+        data, err = safe_read_json(self._file)
+        if not err and isinstance(data, list):
+            self._entries = data[-self.MAX_ENTRIES:]
+        else:
             self._entries = []
+
     def _save(self):
         try:
-            with open(self._file, "w", encoding="utf-8") as f:
-                json.dump(self._entries[-self.MAX_ENTRIES:], f, indent=2)
+            atomic_write_json(self._file, self._entries[-self.MAX_ENTRIES:])
         except Exception:
             pass
+
     def record(
         self,
         action: str,
@@ -61,9 +74,11 @@ class ActivityService:
         self._entries.append(entry)
         self._entries = self._entries[-self.MAX_ENTRIES:]
         self._save()
+
     def recent(self, limit: int = 10):
         """Return the most recent activity entries, newest first."""
         return list(reversed(self._entries[-limit:]))
+
     def clear(self):
         self._entries = []
         self._save()

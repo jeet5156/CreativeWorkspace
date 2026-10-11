@@ -19,14 +19,16 @@ from models.library_models import AssetAvailability
 class RelationshipChip(QFrame):
     """Interactive visual chip representing a linked external entity with lazy status badge and navigation."""
 
-    clicked = Signal(str, dict)       # (rel_type, target_data)
+    clicked = Signal(str, dict)          # (rel_type, target_data)
     remove_requested = Signal(str, dict) # (rel_type, target_data)
+    markup_requested = Signal(str, dict) # (rel_type, target_data)
 
     def __init__(self, rel_type: str, data: Dict[str, Any], context=None, parent=None):
         super().__init__(parent)
         self.rel_type = rel_type
         self.data = data
         self._context = context
+        self._is_image = False
 
         self._setup_ui()
 
@@ -62,6 +64,29 @@ class RelationshipChip(QFrame):
             }}
         """)
         layout.addWidget(status_lbl)
+
+        # Annotate / Markup Button (for images)
+        if self._is_image and status_str != "Missing":
+            btn_markup = QPushButton("✏")
+            btn_markup.setFixedSize(16, 16)
+            btn_markup.setCursor(QCursor(Qt.PointingHandCursor))
+            btn_markup.setToolTip("Annotate / Visual Markup")
+            btn_markup.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    color: #94A3B8;
+                    border: none;
+                    font-size: 11px;
+                    padding: 0;
+                }
+                QPushButton:hover {
+                    color: #38BDF8;
+                    background-color: #38BDF822;
+                    border-radius: 8px;
+                }
+            """)
+            btn_markup.clicked.connect(self._on_markup_clicked)
+            layout.addWidget(btn_markup)
 
         # Remove Button
         btn_remove = QPushButton("✕")
@@ -107,8 +132,13 @@ class RelationshipChip(QFrame):
     def _on_remove_clicked(self):
         self.remove_requested.emit(self.rel_type, self.data)
 
+    def _on_markup_clicked(self):
+        self.markup_requested.emit(self.rel_type, self.data)
+
     def _resolve_entity_info(self) -> tuple[str, str, str, str]:
         """Resolve icon, title, status label, and status color using context services."""
+        image_exts = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tga', '.tif', '.tiff', '.hdr', '.exr', '.gif'}
+
         if self.rel_type == "project":
             proj_id = self.data.get("project_id", "")
             icon = "📁"
@@ -141,6 +171,9 @@ class RelationshipChip(QFrame):
                 asset = lib_svc.get_asset(asset_id)
                 if asset:
                     title = asset.filename
+                    if Path(title).suffix.lower() in image_exts:
+                        self._is_image = True
+                        icon = "🖼️"
                     avail = lib_svc.get_asset_availability(asset)
                     if avail == AssetAvailability.AVAILABLE:
                         status = "Available"
@@ -166,6 +199,10 @@ class RelationshipChip(QFrame):
             status = "Available"
             color = "#10B981"
 
+            if Path(title).suffix.lower() in image_exts or Path(rel_path).suffix.lower() in image_exts:
+                self._is_image = True
+                icon = "🖼️"
+
             proj_svc = getattr(self._context, "project_service", None) if self._context else None
             asset_svc = getattr(self._context, "asset_service", None) if self._context else None
             if proj_svc:
@@ -183,8 +220,10 @@ class RelationshipChip(QFrame):
 
                     if entry:
                         title = entry.get("filename") or title
+                        if Path(title).suffix.lower() in image_exts:
+                            self._is_image = True
                         cat = entry.get("category") or category
-                        if str(cat).lower() == "references":
+                        if str(cat).lower() == "references" or self._is_image:
                             icon = "🖼️"
                         elif str(cat).lower() == "renders":
                             icon = "🎬"
