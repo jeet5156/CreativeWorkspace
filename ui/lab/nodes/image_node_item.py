@@ -108,16 +108,27 @@ class ImageNodeItem(NodeItem):
 
     def _normalize_image_path(self):
         curr_path = self.payload.get("image_path")
+        if not curr_path:
+            return
+        abs_p = self._resolve_abs_path()
+        if not abs_p or not abs_p.exists():
+            return
         proj_loc = self.project_location
-        if curr_path and proj_loc:
+        if proj_loc:
             try:
-                abs_p = Path(curr_path)
-                if abs_p.is_absolute() and abs_p.exists():
-                    proj_root = Path(proj_loc).resolve()
-                    if proj_root in abs_p.parents or proj_root == abs_p:
-                        self.payload["image_path"] = str(abs_p.relative_to(proj_root)).replace("\\", "/")
+                proj_root = Path(proj_loc).resolve()
+                if proj_root in abs_p.parents or proj_root == abs_p:
+                    self.payload["image_path"] = str(abs_p.relative_to(proj_root)).replace("\\", "/")
+                    return
             except Exception:
                 pass
+        try:
+            from core.paths import get_shared_data_dir
+            shared_data = get_shared_data_dir().resolve()
+            if shared_data in abs_p.parents or shared_data == abs_p:
+                self.payload["image_path"] = str(abs_p.relative_to(shared_data)).replace("\\", "/")
+        except Exception:
+            pass
 
     def set_node_context(self, context):
         super().set_node_context(context)
@@ -210,7 +221,7 @@ class ImageNodeItem(NodeItem):
         except Exception:
             self.payload["file_size_str"] = ""
 
-        # Relative path resolution against project root if applicable
+        # Relative path resolution against project root or shared data root
         rel_path = str(abs_path)
         proj_loc = self.project_location
         if proj_loc:
@@ -218,6 +229,14 @@ class ImageNodeItem(NodeItem):
                 proj_root = Path(proj_loc).resolve()
                 if proj_root in abs_path.parents or proj_root == abs_path:
                     rel_path = str(abs_path.relative_to(proj_root)).replace("\\", "/")
+            except Exception:
+                pass
+        else:
+            try:
+                from core.paths import get_shared_data_dir
+                shared_data = get_shared_data_dir().resolve()
+                if shared_data in abs_path.parents or shared_data == abs_path:
+                    rel_path = str(abs_path.relative_to(shared_data)).replace("\\", "/")
             except Exception:
                 pass
 
@@ -279,8 +298,51 @@ class ImageNodeItem(NodeItem):
             if proj_abs.exists():
                 return proj_abs
 
+        # Check against shared data directory (for workbench/images/... or relative to data/)
+        try:
+            from core.paths import get_shared_data_dir
+            shared_data = get_shared_data_dir()
+            shared_abs = shared_data / rel_or_abs
+            if shared_abs.exists():
+                return shared_abs
+            # Also check if rel_or_abs is relative to app_root (e.g. data/workbench/images/...)
+            shared_root_abs = shared_data.parent / rel_or_abs
+            if shared_root_abs.exists():
+                return shared_root_abs
+        except Exception:
+            pass
+
         if path.exists():
             return path.resolve()
+
+        # Cross-machine fallback: if an absolute path points to a different machine's filesystem
+        # (e.g. C:\Users\... on Machine 1 vs G:\My Drive\... on Machine 2), check if the relative subpath
+        # exists within the current project location (Lab/images/... or Assets/...) or shared workbench storage (workbench/images/...)
+        for candidate_str in (rel_or_abs, abs_val):
+            if not candidate_str:
+                continue
+            norm = str(candidate_str).replace("\\", "/")
+            norm_lower = norm.lower()
+            if proj_loc and "lab/images/" in norm_lower:
+                sub = norm[norm_lower.find("lab/images/"):]
+                cand_p = Path(proj_loc) / sub
+                if cand_p.exists():
+                    return cand_p
+            if proj_loc and "assets/" in norm_lower:
+                sub = norm[norm_lower.find("assets/"):]
+                cand_p = Path(proj_loc) / sub
+                if cand_p.exists():
+                    return cand_p
+            if "workbench/images/" in norm_lower:
+                try:
+                    from core.paths import get_shared_data_dir
+                    shared_data = get_shared_data_dir()
+                    sub = norm[norm_lower.find("workbench/images/"):]
+                    cand_p = shared_data / sub
+                    if cand_p.exists():
+                        return cand_p
+                except Exception:
+                    pass
 
         return None
 
@@ -484,6 +546,79 @@ class ImageNodeItem(NodeItem):
             return
         super().mouseDoubleClickEvent(event)
 
+    def paste_image_from_clipboard(self) -> bool:
+        """Paste an image from the system clipboard into this Reference Image card.
+
+        Reads image data or copied image file from clipboard, saves to managed storage
+        (project Lab/images or shared workbench/images), and updates the card.
+        Returns True if an image was pasted, or False if clipboard contains no image.
+        """
+        from PySide6.QtGui import QGuiApplication, QImage, QCursor
+        from PySide6.QtWidgets import QToolTip
+        from PySide6.QtCore import QRect
+        import uuid
+
+        clipboard = QGuiApplication.clipboard()
+        if not clipboard:
+            QToolTip.showText(QCursor.pos(), "Clipboard is unavailable.", None, QRect(), 2500)
+            return False
+
+        image = None
+        raw_img = clipboard.image()
+        if raw_img and not raw_img.isNull():
+            image = raw_img
+        else:
+            mime_data = clipboard.mimeData()
+            if mime_data:
+                if mime_data.hasImage():
+                    img_data = mime_data.imageData()
+                    if isinstance(img_data, QImage) and not img_data.isNull():
+                        image = img_data
+                elif mime_data.hasUrls():
+                    for url in mime_data.urls():
+                        if url.isLocalFile():
+                            loc = Path(url.toLocalFile())
+                            if loc.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
+                                file_img = QImage(str(loc))
+                                if not file_img.isNull():
+                                    image = file_img
+                                    break
+
+        if image is None or image.isNull():
+            QToolTip.showText(QCursor.pos(), "Clipboard does not contain an image.", None, QRect(), 2500)
+            return False
+
+        # Determine target directory based on project vs global workbench
+        proj_loc = self.project_location
+        if proj_loc:
+            images_dir = Path(proj_loc) / "Lab" / "images"
+        else:
+            from core.paths import get_shared_workbench_images_dir
+            images_dir = get_shared_workbench_images_dir()
+
+        try:
+            images_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            short_id = uuid.uuid4().hex[:8]
+            target_path = images_dir / f"pasted_{timestamp}_{short_id}.png"
+
+            # Avoid collision
+            counter = 1
+            while target_path.exists():
+                target_path = images_dir / f"pasted_{timestamp}_{short_id}_{counter}.png"
+                counter += 1
+
+            saved = image.save(str(target_path), "PNG")
+            if not saved:
+                QToolTip.showText(QCursor.pos(), "Failed to save clipboard image to disk.", None, QRect(), 2500)
+                return False
+
+            self.set_image(str(target_path), project_location=proj_loc)
+            return True
+        except Exception as e:
+            QToolTip.showText(QCursor.pos(), f"Error saving clipboard image: {e}", None, QRect(), 2500)
+            return False
+
     def on_context_menu(self, menu):
         """Build artist-friendly context menu for Reference Image nodes."""
         super().on_context_menu(menu)
@@ -506,6 +641,11 @@ class ImageNodeItem(NodeItem):
             menu.addAction(action_copy)
 
             menu.addSeparator()
+
+        action_paste = QAction("📋 Paste Image", menu)
+        action_paste.setShortcut("Ctrl+V")
+        action_paste.triggered.connect(lambda: self.paste_image_from_clipboard())
+        menu.addAction(action_paste)
 
         action_relink = QAction("📍 Locate / Relink Image...", menu)
         action_relink.triggered.connect(lambda: self.prompt_choose_image())

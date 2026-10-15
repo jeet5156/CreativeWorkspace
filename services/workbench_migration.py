@@ -45,6 +45,7 @@ class WorkbenchMigrationReport:
     new_boards: List[Dict[str, Any]] = field(default_factory=list)
     identical_boards: List[Dict[str, Any]] = field(default_factory=list)
     conflicting_boards: List[BoardConflictDetail] = field(default_factory=list)
+    orphaned_boards: List[Dict[str, Any]] = field(default_factory=list)
     malformed_files: List[Dict[str, Any]] = field(default_factory=list)
     executed_at: Optional[str] = None
 
@@ -68,13 +69,20 @@ class WorkbenchMigrationReport:
             f"- **New Boards to Migrate:** {len(self.new_boards)}",
             f"- **Identical Boards (Skipped cleanly):** {len(self.identical_boards)}",
             f"- **Conflicting Boards (Preserved in target & saved to isolated conflict bundle):** {len(self.conflicting_boards)}",
+            f"- **Orphaned Empty Legacy Files (Skipped from Workbench):** {len(self.orphaned_boards)}",
             f"- **Malformed / Corrupt Board Files:** {len(self.malformed_files)}",
         ]
+
+        if self.orphaned_boards:
+            lines.append("\n### Orphaned Empty Legacy Files (Skipped from Workbench)")
+            for o in self.orphaned_boards:
+                lines.append(f"- `[{o.get('id')}]` **{o.get('name', 'Untitled')}** (`{o.get('filename')}`) | Items: 0 | Connectors: 0")
 
         if self.new_boards:
             lines.append("\n### New Boards to Migrate")
             for b in self.new_boards:
-                lines.append(f"- `[{b.get('id')}]` **{b.get('name', 'Untitled')}** | Items: {b.get('item_count', 0)} | Connectors: {b.get('connector_count', 0)}")
+                recovered_tag = " (Recovered Unmanifested)" if b.get("manifest_entry", {}).get("unmanifested_recovered") else ""
+                lines.append(f"- `[{b.get('id')}]` **{b.get('name', 'Untitled')}**{recovered_tag} | Items: {b.get('item_count', 0)} | Connectors: {b.get('connector_count', 0)}")
 
         if self.conflicting_boards:
             lines.append("\n### Conflicting Boards (Manual Review)")
@@ -151,6 +159,36 @@ def inspect_workbench_migration(
         bid = bdata.get("board_id", sfile.stem)
         manifest_entry = source_manifest_entries.get(bid, {})
         board_name = bdata.get("name") or manifest_entry.get("name", sfile.stem)
+        item_count = len(bdata.get("items", []))
+        connector_count = len(bdata.get("connectors", []))
+
+        # If the source directory has a manifest, files not registered in the manifest
+        # are checked for user data.
+        # 1. Empty stubs (0 items, 0 connectors) are orphaned legacy files (e.g. from prior
+        #    project isolation leaks) and must NOT be imported as new Workbench boards.
+        # 2. Files with valid user content (items > 0 or connectors > 0) must NOT be silently
+        #    excluded; they are preserved and migrated with recovered metadata.
+        if report.source_has_manifest and bid not in source_manifest_entries:
+            if item_count == 0 and connector_count == 0:
+                report.orphaned_boards.append({
+                    "id": bid,
+                    "name": board_name,
+                    "filename": sfile.name,
+                    "item_count": item_count,
+                    "connector_count": connector_count,
+                    "data": bdata,
+                    "manifest_entry": manifest_entry,
+                    "source_file_path": str(sfile),
+                    "is_empty": True,
+                })
+                continue
+            else:
+                manifest_entry = {
+                    "id": bid,
+                    "name": board_name,
+                    "filename": sfile.name,
+                    "unmanifested_recovered": True,
+                }
 
         if bid not in target_boards:
             # New board to migrate

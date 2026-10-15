@@ -3,7 +3,7 @@ import uuid
 from typing import Optional, List, Dict
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsPathItem, QMenu
 from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QPoint
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QAction, QPainterPath
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QAction, QPainterPath, QPixmap, QGuiApplication
 from core.canvas_clipboard import CanvasClipboard
 from core.canvas_command import CanvasCommand
 from services.connection_manager import ConnectionManager
@@ -58,7 +58,7 @@ class InfiniteCanvas(QGraphicsView):
         # Viewport rendering flags
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -584,6 +584,29 @@ class InfiniteCanvas(QGraphicsView):
                 event.accept()
                 return
             elif key == Qt.Key_V:
+                from ui.lab.nodes.image_node_item import ImageNodeItem
+                from PySide6.QtGui import QGuiApplication
+                from pathlib import Path
+                selected = self.selected_nodes()
+                if len(selected) == 1 and isinstance(selected[0], ImageNodeItem):
+                    if selected[0].paste_image_from_clipboard():
+                        event.accept()
+                        return
+                    if not self.clipboard.has_content():
+                        event.accept()
+                        return
+                elif len(selected) == 0:
+                    clipboard = QGuiApplication.clipboard()
+                    mime_data = clipboard.mimeData() if clipboard else None
+                    has_sys_img = (mime_data.hasImage() or (mime_data.hasUrls() and any(
+                        Path(u.toLocalFile()).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+                        for u in mime_data.urls() if u.isLocalFile()
+                    ))) if mime_data else False
+                    if has_sys_img and not self.clipboard.has_content():
+                        self.paste_image_as_new_card()
+                        event.accept()
+                        return
+
                 self.execute_command(CanvasCommand.PASTE)
                 event.accept()
                 return
@@ -753,23 +776,25 @@ class InfiniteCanvas(QGraphicsView):
     # -------------------------------------------------------------------------
     # Infinite Grid Painting
     # -------------------------------------------------------------------------
+    def _get_grid_brush(self, grid_size: int) -> QBrush:
+        if getattr(self, "_cached_grid_brush", None) is not None and getattr(self, "_cached_grid_size", None) == grid_size:
+            return self._cached_grid_brush
+        pm = QPixmap(grid_size, grid_size)
+        pm.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pm)
+        p.setPen(QColor("#2E3342"))
+        p.drawPoint(0, 0)
+        p.end()
+        self._cached_grid_brush = QBrush(pm)
+        self._cached_grid_size = grid_size
+        return self._cached_grid_brush
+
     def drawBackground(self, painter: QPainter, rect: QRectF):
         painter.fillRect(rect, QColor("#14161D"))
         if not self._grid_visible:
             return
-        grid_size = self._grid_size
-        left = int(math.floor(rect.left() / grid_size)) * grid_size
-        top = int(math.floor(rect.top() / grid_size)) * grid_size
-        dot_pen = QPen(QColor("#2E3342"))
-        dot_pen.setWidth(1)
-        painter.setPen(dot_pen)
-        x = left
-        while x < rect.right():
-            y = top
-            while y < rect.bottom():
-                painter.drawPoint(int(x), int(y))
-                y += grid_size
-            x += grid_size
+        brush = self._get_grid_brush(self._grid_size)
+        painter.fillRect(rect, brush)
     def set_context(self, context):
         self._context = context
         if not hasattr(self, "node_context") or not self.node_context:
@@ -1206,12 +1231,28 @@ class InfiniteCanvas(QGraphicsView):
         home_act.triggered.connect(self.reset_camera)
         fit_all_act = QAction("🔍  Fit All Nodes", self)
         fit_all_act.triggered.connect(self.fit_view)
+        
+        from PySide6.QtGui import QGuiApplication
+        from pathlib import Path
+        clipboard = QGuiApplication.clipboard()
+        mime_data = clipboard.mimeData() if clipboard else None
+        has_sys_img = (mime_data.hasImage() or (mime_data.hasUrls() and any(
+            Path(u.toLocalFile()).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+            for u in mime_data.urls() if u.isLocalFile()
+        ))) if mime_data else False
+        paste_img_act = None
+        if has_sys_img:
+            paste_img_act = QAction("🖼️  Paste Image as Card", self)
+            paste_img_act.triggered.connect(lambda: self.paste_image_as_new_card(scene_pos=scene_pos))
+
         actions = menu.actions()
         if actions:
             first_act = actions[0]
             menu.insertAction(first_act, home_act)
             menu.insertAction(first_act, fit_all_act)
             menu.insertSeparator(first_act)
+            if paste_img_act:
+                menu.insertAction(first_act, paste_img_act)
             menu.insertAction(first_act, paste_act)
             menu.insertAction(first_act, select_all_act)
             menu.insertAction(first_act, clear_sel_act)
@@ -1220,10 +1261,52 @@ class InfiniteCanvas(QGraphicsView):
             menu.addAction(home_act)
             menu.addAction(fit_all_act)
             menu.addSeparator()
+            if paste_img_act:
+                menu.addAction(paste_img_act)
             menu.addAction(paste_act)
             menu.addAction(select_all_act)
             menu.addAction(clear_sel_act)
         menu.exec_(event.globalPos())
+
+    def paste_image_as_new_card(self, scene_pos: QPointF = None):
+        """Create a new Reference Image card at scene_pos (or viewport center) with the clipboard image."""
+        from ui.lab.nodes.image_node_item import ImageNodeItem
+        if scene_pos is None:
+            viewport_rect = self.viewport().rect()
+            scene_pos = self.mapToScene(viewport_rect.center())
+
+        node_id = str(uuid.uuid4())
+        node_data = {
+            "id": node_id,
+            "type": "image",
+            "transform": {
+                "x": round(scene_pos.x(), 2),
+                "y": round(scene_pos.y(), 2),
+                "z": 1,
+                "width": 320,
+                "height": 240,
+                "rotation": 0.0,
+            },
+            "style": {
+                "background": "#1E2029",
+                "accent": "#6366F1",
+            },
+            "metadata": {
+                "version": 1,
+                "locked": False,
+            },
+            "payload": {
+                "image_path": "",
+                "caption": "",
+                "fit_mode": "fit",
+            },
+        }
+        node = self.add_node(node_data)
+        if node and isinstance(node, ImageNodeItem):
+            self.set_selected_nodes([node])
+            node.paste_image_from_clipboard()
+            return node
+        return None
     def _create_node_from_def(self, defn: NodeDefinition, scene_pos: QPointF):
         node_data = {
             "id": str(uuid.uuid4()),

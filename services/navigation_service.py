@@ -30,14 +30,25 @@ class NavigationService(QObject):
         except Exception:
             pass
 
-    # Public API
     def handle_navigation(self, key: str):
         if key == "home":
             self.navigate_home()
         elif key == "projects":
             self.navigate_projects_dashboard()
+        elif key == "workbench":
+            self.navigate_workbench()
         else:
             self.navigate_module(key)
+
+    def navigate_workbench(self):
+        try:
+            if hasattr(self.workspace_manager, "show_workbench"):
+                self.workspace_manager.show_workbench()
+            else:
+                self.workspace_manager.show_module("lab")
+            self.navigate_to_module.emit("workbench")
+        except Exception:
+            pass
 
     def navigate_home(self):
         try:

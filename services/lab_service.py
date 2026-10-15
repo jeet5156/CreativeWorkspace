@@ -172,6 +172,8 @@ class LabService(QObject):
     def set_active_board_id(self, project, board_id: str) -> bool:
         manifest = self.get_manifest(project)
         if any(b.get("id") == board_id for b in manifest.get("boards", [])):
+            if manifest.get("active_board_id") == board_id:
+                return True
             manifest["active_board_id"] = board_id
             return self.save_manifest(project, manifest)
         return False

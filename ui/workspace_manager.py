@@ -31,6 +31,7 @@ class WorkspaceManager:
             from ui.panels.lab_panel import LabPanel
             self.lab_panel = LabPanel(self.context)
             self._register_module("lab", self.lab_panel)
+            self._register_module("workbench", self.lab_panel)
         except Exception:
             self.lab_panel = None
 
@@ -148,6 +149,10 @@ class WorkspaceManager:
             pass
 
     def show_module(self, key: str):
+        if key == "workbench":
+            self.show_workbench()
+            return
+
         w = self._modules.get(key)
         if not w:
             return

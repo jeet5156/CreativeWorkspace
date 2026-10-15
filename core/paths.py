@@ -44,6 +44,11 @@ def get_shared_workbench_boards_dir() -> Path:
     return get_shared_data_dir() / "workbench" / "boards"
 
 
+def get_shared_workbench_images_dir() -> Path:
+    """Return the shared global Workbench images directory (<APP_ROOT>/data/workbench/images)."""
+    return get_shared_data_dir() / "workbench" / "images"
+
+
 def get_shared_knowledge_dir() -> Path:
     """Return the shared Knowledge base directory (<APP_ROOT>/data/knowledge)."""
     return get_shared_data_dir() / "knowledge"

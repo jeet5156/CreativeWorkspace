@@ -114,7 +114,6 @@ class ExplorerPanel(QWidget):
         self.business_root.setData(0, Qt.UserRole + 1, "business")
         self.tree.addTopLevelItem(self.business_root)
 
-        self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.itemCollapsed.connect(self._on_item_collapsed)
 
         # expose navigation_requested when clicking top-level nodes

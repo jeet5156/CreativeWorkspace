@@ -220,6 +220,122 @@ class TestWorkbenchMigration(unittest.TestCase):
         self.assertIn("board-1", board_ids)
         self.assertIn("board-target-only", board_ids)
 
+    def test_migration_valid_manifest(self):
+        """Test 1: Valid manifest and matching board file are migrated cleanly."""
+        source_dir = self.tmp_path / "valid_source"
+        target_dir = self.tmp_path / "valid_target"
+
+        self._create_synthetic_board(source_dir, "valid-1", name="Valid Board", items=[{"id": "card-1"}])
+        self._create_synthetic_manifest(source_dir, boards=[{"id": "valid-1", "name": "Valid Board"}], active_board_id="valid-1")
+
+        report = inspect_workbench_migration(source_dir, target_dir)
+        self.assertTrue(report.source_has_manifest)
+        self.assertEqual(len(report.new_boards), 1)
+        self.assertEqual(len(report.orphaned_boards), 0)
+        self.assertEqual(report.new_boards[0]["id"], "valid-1")
+
+    def test_migration_unregistered_legacy_files_empty_vs_content(self):
+        """Test 2: Unregistered empty stub is quarantined as orphan; unregistered board with content is NOT excluded."""
+        source_dir = self.tmp_path / "orphan_source"
+        target_dir = self.tmp_path / "orphan_target"
+
+        # Manifest lists ONLY valid-main
+        self._create_synthetic_board(source_dir, "valid-main", name="Main Board", items=[{"id": "card-1"}])
+        self._create_synthetic_manifest(source_dir, boards=[{"id": "valid-main", "name": "Main Board"}], active_board_id="valid-main")
+
+        # Unregistered file 1: Empty stub (0 items, 0 connectors)
+        self._create_synthetic_board(source_dir, "unreg-empty", name="Empty Stub", items=[])
+
+        # Unregistered file 2: Contains real user cards (must NOT be silently excluded)
+        self._create_synthetic_board(source_dir, "unreg-content", name="Unmanifested User Board", items=[{"id": "user-card-99"}])
+
+        report = inspect_workbench_migration(source_dir, target_dir)
+        self.assertEqual(len(report.orphaned_boards), 1)
+        self.assertEqual(report.orphaned_boards[0]["id"], "unreg-empty")
+        self.assertTrue(report.orphaned_boards[0]["is_empty"])
+
+        # Unmanifested board with content is preserved in new_boards
+        new_board_ids = [b["id"] for b in report.new_boards]
+        self.assertIn("valid-main", new_board_ids)
+        self.assertIn("unreg-content", new_board_ids)
+        self.assertNotIn("unreg-empty", new_board_ids)
+
+        # Execute migration and verify target manifest
+        exec_report = execute_workbench_migration(source_dir, target_dir, dry_run=False)
+        target_manifest, _ = safe_read_json(target_dir / "board_manifest.json")
+        target_ids = [b["id"] for b in target_manifest["boards"]]
+        self.assertIn("valid-main", target_ids)
+        self.assertIn("unreg-content", target_ids)
+        self.assertNotIn("unreg-empty", target_ids, "Empty orphan must NOT be added to target manifest")
+
+    def test_migration_missing_source_manifest(self):
+        """Test 3: Missing source manifest migrates all valid boards without treating them as orphans."""
+        source_dir = self.tmp_path / "premanifest_source"
+        target_dir = self.tmp_path / "premanifest_target"
+
+        # Create board files WITHOUT board_manifest.json
+        self._create_synthetic_board(source_dir, "legacy-1", name="Legacy Board 1", items=[{"id": "c1"}])
+        self._create_synthetic_board(source_dir, "legacy-2", name="Legacy Board 2", items=[{"id": "c2"}])
+
+        report = inspect_workbench_migration(source_dir, target_dir)
+        self.assertFalse(report.source_has_manifest)
+        self.assertEqual(len(report.orphaned_boards), 0, "No files should be marked orphan when manifest is absent")
+        self.assertEqual(len(report.new_boards), 2)
+
+        exec_report = execute_workbench_migration(source_dir, target_dir, dry_run=False)
+        target_manifest, _ = safe_read_json(target_dir / "board_manifest.json")
+        self.assertEqual(len(target_manifest["boards"]), 2)
+
+    def test_migration_malformed_board_data(self):
+        """Test 4: Malformed board files are recorded in malformed_files without crashing inspection."""
+        source_dir = self.tmp_path / "corrupt_source"
+        target_dir = self.tmp_path / "corrupt_target"
+        source_dir.mkdir(parents=True, exist_ok=True)
+
+        # Valid board
+        self._create_synthetic_board(source_dir, "valid-1", name="Valid")
+        self._create_synthetic_manifest(source_dir, boards=[{"id": "valid-1", "name": "Valid"}])
+
+        # Malformed files
+        (source_dir / "bad1.lab.json").write_text("{corrupt json content", encoding="utf-8")
+        (source_dir / "bad2.lab.json").write_text("not a dict", encoding="utf-8")
+
+        report = inspect_workbench_migration(source_dir, target_dir)
+        self.assertEqual(len(report.new_boards), 1)
+        self.assertEqual(len(report.malformed_files), 2)
+        malformed_names = [m["filename"] for m in report.malformed_files]
+        self.assertIn("bad1.lab.json", malformed_names)
+        self.assertIn("bad2.lab.json", malformed_names)
+
+    def test_migration_project_board_matching_id_collision(self):
+        """Test 5: Board ID collision with existing target board isolates conflict into bundle without overwriting."""
+        source_dir = self.tmp_path / "collision_source"
+        target_dir = self.tmp_path / "collision_target"
+
+        # Target already has board 'matching-id' with target content
+        self._create_synthetic_board(target_dir, "matching-id", name="Target Original", items=[{"id": "orig-card"}])
+        self._create_synthetic_manifest(target_dir, boards=[{"id": "matching-id", "name": "Target Original"}])
+
+        # Source has board with same ID but different content
+        self._create_synthetic_board(source_dir, "matching-id", name="Source Incoming", items=[{"id": "incoming-card"}])
+        self._create_synthetic_manifest(source_dir, boards=[{"id": "matching-id", "name": "Source Incoming"}])
+
+        report = inspect_workbench_migration(source_dir, target_dir)
+        self.assertEqual(len(report.conflicting_boards), 1)
+        self.assertEqual(report.conflicting_boards[0].board_id, "matching-id")
+
+        # Execute migration
+        execute_workbench_migration(source_dir, target_dir, dry_run=False)
+
+        # Target board MUST remain untouched
+        target_data, _ = safe_read_json(target_dir / "matching-id.lab.json")
+        self.assertEqual(target_data["name"], "Target Original")
+
+        # Conflict bundle must be saved in conflicts/matching-id/
+        conflict_bundles = list((target_dir / "conflicts" / "matching-id").glob("conflict_*"))
+        self.assertEqual(len(conflict_bundles), 1)
+        self.assertTrue((conflict_bundles[0] / "conflict_info.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
