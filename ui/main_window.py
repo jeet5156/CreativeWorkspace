@@ -241,6 +241,11 @@ class MainWindow(QMainWindow):
         # Use fixed default splitter sizes on startup (Explorer ≈ 260 px, Inspector ≈ 320 px)
         try:
             splitter.setHandleWidth(8)  # make handle wider for easier resizing
+            splitter.setCollapsible(0, False)
+            splitter.setCollapsible(1, False)
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+            splitter.setStretchFactor(2, 0)
         except Exception:
             pass
 
@@ -248,13 +253,9 @@ class MainWindow(QMainWindow):
             # Set initial sizes: [Explorer, Workspace, Inspector]
             splitter.setSizes([260, 800, 320])
         except Exception:
-            # fallback to stretch factors if setSizes fails
-            try:
-                splitter.setStretchFactor(0, 1)
-                splitter.setStretchFactor(1, 4)
-                splitter.setStretchFactor(2, 1)
-            except Exception:
-                pass
+            pass
+
+        self._saved_inspector_width = 320
 
         # Do NOT persist splitter state for now — temporary change per request
         self.setCentralWidget(splitter)
@@ -310,20 +311,21 @@ class MainWindow(QMainWindow):
     def _on_home_active(self, active: bool):
         try:
             if active:
-                # remember sizes and hide inspector
-                try:
-                    self._saved_splitter_sizes = self.splitter.sizes()
-                except Exception:
-                    self._saved_splitter_sizes = None
-                self.inspector.setVisible(False)
+                if self.inspector.isVisible():
+                    sizes = self.splitter.sizes()
+                    if len(sizes) >= 3 and sizes[2] > 50:
+                        self._saved_inspector_width = sizes[2]
+                    self.inspector.setVisible(False)
             else:
-                # show inspector and restore sizes
-                self.inspector.setVisible(True)
-                if self._saved_splitter_sizes:
-                    try:
-                        self.splitter.setSizes(self._saved_splitter_sizes)
-                    except Exception:
-                        pass
+                if not self.inspector.isVisible():
+                    self.inspector.setVisible(True)
+                    sizes = self.splitter.sizes()
+                    if len(sizes) >= 3:
+                        exp_w = max(sizes[0], 220)
+                        insp_w = getattr(self, "_saved_inspector_width", 320) or 320
+                        total_w = sum(sizes)
+                        work_w = max(total_w - exp_w - insp_w, 350)
+                        self.splitter.setSizes([exp_w, work_w, insp_w])
         except Exception:
             pass
 

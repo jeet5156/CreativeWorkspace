@@ -85,15 +85,19 @@ class WorkspaceManager:
             )
             self._register_module("knowledge", self.knowledge_panel)
 
-        self._register_module(
-            "business",
-            ModulePlaceholder(
+        # Register Business Panel
+        try:
+            from ui.panels.business_panel import BusinessPanel
+            self.business_panel = BusinessPanel(self.context)
+            self._register_module("business", self.business_panel)
+        except Exception:
+            self.business_panel = ModulePlaceholder(
                 "Business Tools (Coming Soon)",
                 "Invoices, contracts, rates, and financial tools for creative projects and client management.",
                 badge="Coming Soon",
                 icon="💼"
             )
-        )
+            self._register_module("business", self.business_panel)
 
         # FindService available for global search via Explorer
         self.find_service = FindService(context)
@@ -198,18 +202,24 @@ class WorkspaceManager:
                         self.knowledge_panel.refresh()
                 except Exception:
                     pass
+            elif key == "business" and getattr(self, "business_panel", None):
+                try:
+                    if hasattr(self.business_panel, "refresh"):
+                        self.business_panel.refresh()
+                except Exception:
+                    pass
             self.workspace.stack.setCurrentWidget(w)
         except Exception:
             pass
 
 
-    def show_workbench(self):
+    def show_workbench(self, board_id: str = None, board_name: str = None, collection_id: str = None):
         """Navigate to global Workbench in LabPanel (project=None)."""
         if getattr(self, "lab_panel", None):
             try:
                 if self.context:
                     self.context.set_current_project(None)
-                self.lab_panel.show_project(None)
+                self.lab_panel.show_project(None, board_id=board_id, board_name=board_name, collection_id=collection_id)
             except Exception:
                 pass
             self.show_module("lab")

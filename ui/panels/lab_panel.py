@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QInputDialog,
     QMessageBox,
+    QComboBox,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
@@ -24,6 +25,7 @@ class LabPanel(QWidget):
         super().__init__()
         self._context = context
         self._current_project = None
+        self._current_collection_id = None
         self._current_board_id = None
         self._current_board_name = "Main"
         self._sidebar_visible = True
@@ -100,6 +102,12 @@ class LabPanel(QWidget):
         self.board_label = QLabel("— Main Canvas")
         self.board_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
         header_layout.addWidget(self.board_label)
+
+        self.rename_board_btn = QPushButton("✏️")
+        self.rename_board_btn.setToolTip("Rename current board")
+        self.rename_board_btn.setFixedWidth(26)
+        self.rename_board_btn.clicked.connect(self._on_rename_active_board_clicked)
+        header_layout.addWidget(self.rename_board_btn)
 
         header_layout.addStretch()
 
@@ -193,9 +201,72 @@ class LabPanel(QWidget):
         sidebar_layout.setContentsMargins(6, 8, 6, 8)
         sidebar_layout.setSpacing(6)
 
-        # Sidebar Header Row
+        # Level 1 Collection / Main Board controls (Visible for global Workbench)
+        self.collection_container = QWidget()
+        col_container_layout = QVBoxLayout(self.collection_container)
+        col_container_layout.setContentsMargins(0, 0, 0, 4)
+        col_container_layout.setSpacing(4)
+
+        col_header_layout = QHBoxLayout()
+        self.col_title_label = QLabel("MAIN BOARD")
+        col_header_layout.addWidget(self.col_title_label)
+        col_header_layout.addStretch()
+
+        self.add_col_btn = QPushButton("➕")
+        self.add_col_btn.setToolTip("Create New Main Board")
+        self.add_col_btn.setFixedWidth(24)
+        self.add_col_btn.clicked.connect(self._on_create_collection_clicked)
+        col_header_layout.addWidget(self.add_col_btn)
+
+        self.rename_col_btn = QPushButton("✏️")
+        self.rename_col_btn.setToolTip("Rename Current Main Board")
+        self.rename_col_btn.setFixedWidth(24)
+        self.rename_col_btn.clicked.connect(self._on_rename_collection_clicked)
+        col_header_layout.addWidget(self.rename_col_btn)
+
+        self.delete_col_btn = QPushButton("🗑️")
+        self.delete_col_btn.setToolTip("Delete Current Main Board")
+        self.delete_col_btn.setFixedWidth(24)
+        self.delete_col_btn.clicked.connect(self._on_delete_collection_clicked)
+        col_header_layout.addWidget(self.delete_col_btn)
+        col_container_layout.addLayout(col_header_layout)
+
+        self.collection_combo = QComboBox()
+        self.collection_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #232736;
+                color: #F1F5F9;
+                border: 1px solid #343847;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 18px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #1E2029;
+                color: #F1F5F9;
+                selection-background-color: #312E81;
+                selection-color: #A5B4FC;
+                border: 1px solid #343847;
+            }
+        """)
+        self.collection_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
+        col_container_layout.addWidget(self.collection_combo)
+
+        col_sep = QFrame()
+        col_sep.setFrameShape(QFrame.HLine)
+        col_sep.setStyleSheet("color: #2E3342; margin-top: 4px; margin-bottom: 4px;")
+        col_container_layout.addWidget(col_sep)
+
+        sidebar_layout.addWidget(self.collection_container)
+
+        # Sidebar Header Row (Working Boards)
         sb_header_layout = QHBoxLayout()
-        self.sb_title_label = QLabel("PROJECT BOARDS")
+        self.sb_title_label = QLabel("WORKBENCH BOARDS")
         sb_header_layout.addWidget(self.sb_title_label)
         sb_header_layout.addStretch()
 
@@ -317,12 +388,13 @@ class LabPanel(QWidget):
             else:
                 self._context.workspace_manager.show_home()
 
-    def show_project(self, project, board_id: str = None, board_name: str = None, target_node_id: str = None, force_reload: bool = False):
+    def show_project(self, project, board_id: str = None, board_name: str = None, collection_id: str = None, target_node_id: str = None, force_reload: bool = False):
         # 1. Flush pending saves for previous project & board BEFORE changing references
         self.flush_pending_saves()
 
         prev_project = self._current_project
         prev_board_id = self._current_board_id
+        prev_collection_id = getattr(self, "_current_collection_id", None)
 
         # 2. Update current project reference
         self._current_project = project
@@ -338,25 +410,63 @@ class LabPanel(QWidget):
             else:
                 self.title_label.setText("🛠️ <b>Workbench</b>")
 
-        self._update_canvas_context()
-
         if not self._context or not getattr(self._context, "lab_service", None):
             return
 
         lab_svc = self._context.lab_service
+
+        # Update collection context
+        if project is None:
+            if hasattr(self, "collection_container"):
+                self.collection_container.setVisible(True)
+            if hasattr(self, "sb_title_label") and self.sb_title_label:
+                self.sb_title_label.setText("WORKBENCH BOARDS")
+
+            if collection_id:
+                self._current_collection_id = collection_id
+                lab_svc.set_active_collection_id(None, collection_id)
+            elif board_id:
+                b_entry = lab_svc.get_board_entry(None, board_id)
+                if b_entry and b_entry.get("collection_id"):
+                    self._current_collection_id = b_entry["collection_id"]
+                    lab_svc.set_active_collection_id(None, self._current_collection_id)
+            elif not getattr(self, "_current_collection_id", None):
+                self._current_collection_id = lab_svc.get_active_collection_id(None)
+                if not self._current_collection_id:
+                    cols = lab_svc.list_collections(None)
+                    if cols:
+                        self._current_collection_id = cols[0]["id"]
+        else:
+            if hasattr(self, "collection_container"):
+                self.collection_container.setVisible(False)
+            if hasattr(self, "sb_title_label") and self.sb_title_label:
+                self.sb_title_label.setText("PROJECT BOARDS")
+            self._current_collection_id = None
+
+        self._update_canvas_context()
+
         target_board = board_id or board_name
 
         # Resolve active board ID from manifest if none provided
         if not target_board:
-            target_board = lab_svc.get_active_board_id(project)
+            if project is None and self._current_collection_id:
+                col_boards = lab_svc.list_boards(None, collection_id=self._current_collection_id)
+                active_id = lab_svc.get_active_board_id(None)
+                if active_id and any(b["id"] == active_id for b in col_boards):
+                    target_board = active_id
+                elif col_boards:
+                    target_board = col_boards[0]["id"]
+            else:
+                target_board = lab_svc.get_active_board_id(project)
 
         if not target_board:
             manifest = lab_svc.get_manifest(project)
             target_board = manifest.get("active_board_id")
 
-        # Fast path guard: If already showing the exact project and board, don't reload disk and recreate canvas nodes!
+        # Fast path guard: If already showing the exact project, collection, and board, don't reload disk!
         project_same = (prev_project == project) if (prev_project and project) else (prev_project is None and project is None)
-        if not force_reload and project_same and prev_board_id and (prev_board_id == target_board or self._current_board_name == target_board):
+        col_same = (prev_collection_id == self._current_collection_id)
+        if not force_reload and project_same and col_same and prev_board_id and (prev_board_id == target_board or self._current_board_name == target_board):
             if target_node_id and hasattr(self, "canvas") and self.canvas:
                 self.canvas.focus_node(target_node_id)
             return
@@ -376,7 +486,7 @@ class LabPanel(QWidget):
         # 3. Resolve target entry and set current board ID/name
         entry = lab_svc.get_board_entry(self._current_project, board_id)
         if not entry:
-            boards = lab_svc.list_boards(self._current_project)
+            boards = lab_svc.list_boards(self._current_project, collection_id=self._current_collection_id)
             entry = boards[0] if boards else None
 
         target_id = entry["id"] if entry else board_id
@@ -395,8 +505,15 @@ class LabPanel(QWidget):
         if entry:
             self._current_board_id = entry["id"]
             self._current_board_name = entry["name"]
+            if entry.get("collection_id"):
+                self._current_collection_id = entry["collection_id"]
             if hasattr(self, "board_label") and self.board_label:
-                self.board_label.setText(f"— {self._current_board_name} Canvas")
+                if self._current_project is None and self._current_collection_id:
+                    col = lab_svc.get_collection(None, self._current_collection_id)
+                    col_name = col["name"] if col else "Main"
+                    self.board_label.setText(f"— {col_name} › {self._current_board_name} Canvas")
+                else:
+                    self.board_label.setText(f"— {self._current_board_name} Canvas")
 
         if self._current_board_id:
             lab_svc.set_active_board_id(self._current_project, self._current_board_id)
@@ -455,21 +572,45 @@ class LabPanel(QWidget):
         if not self._context or not getattr(self._context, "lab_service", None):
             return
 
-        if hasattr(self, "sb_title_label") and self.sb_title_label:
-            if self._current_project:
+        lab_svc = self._context.lab_service
+
+        if self._current_project:
+            if hasattr(self, "collection_container"):
+                self.collection_container.setVisible(False)
+            if hasattr(self, "sb_title_label") and self.sb_title_label:
                 self.sb_title_label.setText("PROJECT BOARDS")
-            else:
+            boards = lab_svc.list_boards(self._current_project)
+        else:
+            if hasattr(self, "collection_container"):
+                self.collection_container.setVisible(True)
+            if hasattr(self, "sb_title_label") and self.sb_title_label:
                 self.sb_title_label.setText("WORKBENCH BOARDS")
 
-        lab_svc = self._context.lab_service
-        boards = lab_svc.list_boards(self._current_project)
+            # Refresh collections combo
+            if hasattr(self, "collection_combo"):
+                collections = lab_svc.list_collections(None)
+                was_blocked = self.collection_combo.signalsBlocked()
+                self.collection_combo.blockSignals(True)
+                try:
+                    self.collection_combo.clear()
+                    active_idx = 0
+                    for idx, c in enumerate(collections):
+                        self.collection_combo.addItem(f"📁 {c['name']}", c["id"])
+                        if c["id"] == self._current_collection_id:
+                            active_idx = idx
+                    if collections:
+                        self.collection_combo.setCurrentIndex(active_idx)
+                finally:
+                    self.collection_combo.blockSignals(was_blocked)
+
+            boards = lab_svc.list_boards(None, collection_id=self._current_collection_id)
 
         # Optimization: Reuse sidebar items if board count and IDs match
         if self.boards_list.count() == len(boards):
             matches = True
             for idx, b in enumerate(boards):
                 list_item = self.boards_list.item(idx)
-                if not list_item or list_item.data(Qt.UserRole) != b["id"]:
+                if not list_item or list_item.data(Qt.UserRole) != b["id"] or list_item.data(Qt.UserRole + 1) != b["name"]:
                     matches = False
                     break
             if matches:
@@ -486,7 +627,7 @@ class LabPanel(QWidget):
 
         active_item = None
         for b in boards:
-            item = QListWidgetItem(f"📋 {b['name']}")
+            item = QListWidgetItem(f"🎨 {b['name']}")
             item.setData(Qt.UserRole, b["id"])
             item.setData(Qt.UserRole + 1, b["name"])
             self.boards_list.addItem(item)
@@ -496,9 +637,87 @@ class LabPanel(QWidget):
 
         if active_item:
             self.boards_list.setCurrentItem(active_item)
+        elif self.boards_list.count() > 0:
+            self.boards_list.setCurrentRow(0)
 
         self.boards_list.blockSignals(False)
 
+    def _on_collection_combo_changed(self, index: int):
+        if index < 0 or not self._context or not getattr(self._context, "lab_service", None):
+            return
+        col_id = self.collection_combo.itemData(index)
+        if not col_id or col_id == self._current_collection_id:
+            return
+        self._current_collection_id = col_id
+        lab_svc = self._context.lab_service
+        lab_svc.set_active_collection_id(None, col_id)
+        col_boards = lab_svc.list_boards(None, collection_id=col_id)
+        target_board = col_boards[0]["id"] if col_boards else None
+        if target_board:
+            self._switch_to_board(target_board)
+        else:
+            self._refresh_boards_sidebar()
+
+    def _on_create_collection_clicked(self):
+        if not self._context or not getattr(self._context, "lab_service", None):
+            return
+        lab_svc = self._context.lab_service
+        name, ok = QInputDialog.getText(self, "New Main Board", "Enter main board collection name:", text="New Collection")
+        if ok and name.strip():
+            entry = lab_svc.create_collection(None, name.strip())
+            if entry:
+                self._current_collection_id = entry["id"]
+                active_board = lab_svc.get_active_board_id(None)
+                if active_board:
+                    self._switch_to_board(active_board)
+                else:
+                    self._refresh_boards_sidebar()
+
+    def _on_rename_collection_clicked(self):
+        if not self._context or not getattr(self._context, "lab_service", None) or not self._current_collection_id:
+            return
+        lab_svc = self._context.lab_service
+        col = lab_svc.get_collection(None, self._current_collection_id)
+        current_name = col["name"] if col else "Collection"
+        name, ok = QInputDialog.getText(self, "Rename Main Board", "Enter new name:", text=current_name)
+        if ok and name.strip() and name.strip() != current_name:
+            if lab_svc.rename_collection(None, self._current_collection_id, name.strip()):
+                if self._current_project is None:
+                    self.board_label.setText(f"— {name.strip()} › {self._current_board_name} Canvas")
+                self._refresh_boards_sidebar()
+
+    def _on_delete_collection_clicked(self):
+        if not self._context or not getattr(self._context, "lab_service", None) or not self._current_collection_id:
+            return
+        lab_svc = self._context.lab_service
+        cols = lab_svc.list_collections(None)
+        if len(cols) <= 1:
+            QMessageBox.warning(
+                self,
+                "Cannot Delete Main Board",
+                "Cannot delete the final remaining main board in Workbench."
+            )
+            return
+
+        col = lab_svc.get_collection(None, self._current_collection_id)
+        col_name = col["name"] if col else "Main Board"
+        num_children = len(lab_svc.list_boards(None, collection_id=self._current_collection_id))
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Main Board",
+            f"Are you sure you want to delete main board '{col_name}' and its {num_children} working boards?\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            if lab_svc.delete_collection(None, self._current_collection_id):
+                self._current_collection_id = lab_svc.get_active_collection_id(None)
+                new_active = lab_svc.get_active_board_id(None)
+                if new_active:
+                    self._switch_to_board(new_active, force_reload=True)
+                else:
+                    self._refresh_boards_sidebar()
 
     def _on_sidebar_item_clicked(self, item: QListWidgetItem):
         if not item:
@@ -511,10 +730,11 @@ class LabPanel(QWidget):
         if not self._context or not getattr(self._context, "lab_service", None):
             return
 
-        name, ok = QInputDialog.getText(self, "New Board", "Enter board name:", text="Untitled Board")
+        title = f"New Lab Board ({self._current_project.name})" if self._current_project else "New Working Board"
+        name, ok = QInputDialog.getText(self, title, "Enter board name:", text="Untitled Board")
         if ok and name.strip():
             lab_svc = self._context.lab_service
-            new_entry = lab_svc.create_board(self._current_project, name.strip())
+            new_entry = lab_svc.create_board(self._current_project, name.strip(), collection_id=self._current_collection_id)
             if new_entry:
                 self._switch_to_board(new_entry["id"])
 
@@ -565,8 +785,17 @@ class LabPanel(QWidget):
             if lab_svc.rename_board(self._current_project, board_id, name.strip()):
                 if board_id == self._current_board_id:
                     self._current_board_name = name.strip()
-                    self.board_label.setText(f"— {self._current_board_name} Canvas")
+                    if self._current_project is None and self._current_collection_id:
+                        col = lab_svc.get_collection(None, self._current_collection_id)
+                        col_name = col["name"] if col else "Main"
+                        self.board_label.setText(f"— {col_name} › {self._current_board_name} Canvas")
+                    else:
+                        self.board_label.setText(f"— {self._current_board_name} Canvas")
                 self._refresh_boards_sidebar()
+
+    def _on_rename_active_board_clicked(self):
+        if self._current_board_id:
+            self._on_rename_board_clicked(self._current_board_id, self._current_board_name)
 
     def _on_duplicate_board_clicked(self, board_id: str):
         if not self._context or not getattr(self._context, "lab_service", None):
@@ -580,7 +809,7 @@ class LabPanel(QWidget):
         if not self._context or not getattr(self._context, "lab_service", None):
             return
         lab_svc = self._context.lab_service
-        boards = lab_svc.list_boards(self._current_project)
+        boards = lab_svc.list_boards(self._current_project, collection_id=self._current_collection_id)
         if len(boards) <= 1:
             QMessageBox.warning(
                 self,
@@ -598,12 +827,13 @@ class LabPanel(QWidget):
         )
 
         if reply == QMessageBox.Yes:
-            # Delete board via LabService (which handles active board fallback if needed)
-            active_fallback = lab_svc.get_active_board_id(self._current_project)
+            was_active = (board_id == self._current_board_id)
             if lab_svc.delete_board(self._current_project, board_id):
-                # Switch to newly set active board
                 new_active = lab_svc.get_active_board_id(self._current_project)
-                self._switch_to_board(new_active)
+                if was_active:
+                    self._switch_to_board(new_active, force_reload=True)
+                else:
+                    self._refresh_boards_sidebar()
 
 
     def _on_camera_changed(self, viewport_state: dict):

@@ -311,7 +311,7 @@ class NodeItem(QGraphicsObject):
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
             self.updated_at = datetime.now().isoformat()
-            self._emit_modified()
+            self._emit_modified(lightweight=True)
         elif change == QGraphicsItem.ItemSelectedHasChanged:
             if value:
                 self.on_selected()
@@ -327,9 +327,12 @@ class NodeItem(QGraphicsObject):
         self.update()
         super().hoverLeaveEvent(event)
 
-    def _emit_modified(self):
+    def _emit_modified(self, lightweight: bool = False):
         try:
-            self.node_modified.emit(self.to_dict())
+            if lightweight:
+                self.node_modified.emit({"id": self.id})
+            else:
+                self.node_modified.emit(self.to_dict())
         except Exception:
             pass
 

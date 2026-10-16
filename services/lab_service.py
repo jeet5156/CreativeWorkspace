@@ -39,7 +39,8 @@ class LabService(QObject):
         return self.get_boards_dir(project) / "board_manifest.json"
     def default_manifest_data(self) -> dict:
         return {
-            "version": "1.0",
+            "version": "2.0",
+            "active_collection_id": None,
             "active_board_id": None,
             "last_view": {
                 "zoom": 1.0,
@@ -48,9 +49,21 @@ class LabService(QObject):
                 "grid_visible": True,
                 "snap_to_grid": False,
             },
+            "collections": [],
             "boards": [],
         }
-    def default_board_entry(self, board_id: str, name: str, order: int = 0) -> dict:
+    def default_collection_entry(self, collection_id: str, name: str, order: int = 0) -> dict:
+        now = datetime.now().isoformat()
+        return {
+            "id": collection_id,
+            "name": name,
+            "created": now,
+            "modified": now,
+            "color": None,
+            "icon": None,
+            "order": order,
+        }
+    def default_board_entry(self, board_id: str, name: str, order: int = 0, collection_id: str = None) -> dict:
         now = datetime.now().isoformat()
         return {
             "id": board_id,
@@ -64,6 +77,7 @@ class LabService(QObject):
             "favorite": False,
             "locked": False,
             "order": order,
+            "collection_id": collection_id,
         }
     def default_board_data(self, board_id: str, name: str = "Main") -> dict:
         now = datetime.now().isoformat()
@@ -93,6 +107,10 @@ class LabService(QObject):
             manifest = self.default_manifest_data()
             main_path = boards_dir / "Main.lab.json"
             main_id = str(uuid.uuid4())
+            col_id = str(uuid.uuid4())
+            col_entry = self.default_collection_entry(col_id, "General", order=0)
+            manifest["collections"].append(col_entry)
+            manifest["active_collection_id"] = col_id
             if main_path.exists():
                 # Migration: rename Main.lab.json to <main_id>.lab.json
                 target_path = boards_dir / f"{main_id}.lab.json"
@@ -100,9 +118,9 @@ class LabService(QObject):
                     main_path.rename(target_path)
                 except Exception:
                     pass
-                entry = self.default_board_entry(main_id, "Main", order=0)
+                entry = self.default_board_entry(main_id, "Main", order=0, collection_id=col_id)
             else:
-                entry = self.default_board_entry(main_id, "Main", order=0)
+                entry = self.default_board_entry(main_id, "Main", order=0, collection_id=col_id)
                 board_data = self.default_board_data(main_id, "Main")
                 board_file = boards_dir / f"{main_id}.lab.json"
                 try:
@@ -111,7 +129,10 @@ class LabService(QObject):
                     pass
             manifest["active_board_id"] = main_id
             manifest["boards"].append(entry)
-            self.save_manifest(project, manifest)
+            try:
+                atomic_write_json(manifest_path, manifest)
+            except Exception:
+                pass
             return manifest
         try:
             manifest_data, err = safe_read_json(manifest_path)
@@ -122,11 +143,30 @@ class LabService(QObject):
 
             if "boards" not in manifest or not isinstance(manifest["boards"], list):
                 manifest["boards"] = []
+            if "collections" not in manifest or not isinstance(manifest["collections"], list):
+                manifest["collections"] = []
             if "last_view" not in manifest or not isinstance(manifest["last_view"], dict):
                 manifest["last_view"] = self.default_manifest_data()["last_view"]
+
+            updated_needed = False
+            # Ensure at least one collection exists
+            if not manifest["collections"]:
+                col_id = str(uuid.uuid4())
+                col_entry = self.default_collection_entry(col_id, "General", order=0)
+                manifest["collections"].append(col_entry)
+                manifest["active_collection_id"] = col_id
+                updated_needed = True
+
+            valid_col_ids = {c["id"] for c in manifest["collections"]}
+            default_col_id = manifest["collections"][0]["id"]
+
+            if not manifest.get("active_collection_id") or manifest["active_collection_id"] not in valid_col_ids:
+                manifest["active_collection_id"] = default_col_id
+                updated_needed = True
+
             if not manifest["boards"]:
                 main_id = str(uuid.uuid4())
-                entry = self.default_board_entry(main_id, "Main", order=0)
+                entry = self.default_board_entry(main_id, "Main", order=0, collection_id=default_col_id)
                 board_data = self.default_board_data(main_id, "Main")
                 board_file = boards_dir / f"{main_id}.lab.json"
                 try:
@@ -135,18 +175,38 @@ class LabService(QObject):
                     pass
                 manifest["active_board_id"] = main_id
                 manifest["boards"].append(entry)
-                self.save_manifest(project, manifest)
+                updated_needed = True
+            else:
+                # Ensure all boards have a valid collection_id
+                for b in manifest["boards"]:
+                    if not b.get("collection_id") or b.get("collection_id") not in valid_col_ids:
+                        b["collection_id"] = default_col_id
+                        updated_needed = True
+
             if not manifest.get("active_board_id") or not any(b.get("id") == manifest["active_board_id"] for b in manifest["boards"]):
                 manifest["active_board_id"] = manifest["boards"][0]["id"]
-                self.save_manifest(project, manifest)
+                updated_needed = True
+
+            if updated_needed:
+                try:
+                    atomic_write_json(manifest_path, manifest)
+                except Exception:
+                    pass
             return manifest
         except Exception:
             manifest = self.default_manifest_data()
+            col_id = str(uuid.uuid4())
+            col_entry = self.default_collection_entry(col_id, "General", order=0)
+            manifest["collections"].append(col_entry)
+            manifest["active_collection_id"] = col_id
             main_id = str(uuid.uuid4())
-            entry = self.default_board_entry(main_id, "Main", order=0)
+            entry = self.default_board_entry(main_id, "Main", order=0, collection_id=col_id)
             manifest["active_board_id"] = main_id
             manifest["boards"].append(entry)
-            self.save_manifest(project, manifest)
+            try:
+                atomic_write_json(manifest_path, manifest)
+            except Exception:
+                pass
             return manifest
     def save_manifest(self, project, manifest: dict) -> bool:
         manifest_path = self.get_manifest_path(project)
@@ -156,9 +216,119 @@ class LabService(QObject):
             return True
         except Exception:
             return False
-    def list_boards(self, project) -> list:
+    def list_collections(self, project) -> list:
+        manifest = self.get_manifest(project)
+        cols = manifest.get("collections", [])
+        return sorted(cols, key=lambda c: (c.get("order", 0), c.get("created", "")))
+    def get_collection(self, project, collection_id_or_name: str) -> dict:
+        manifest = self.get_manifest(project)
+        for c in manifest.get("collections", []):
+            if c.get("id") == collection_id_or_name or c.get("name") == collection_id_or_name:
+                return c
+        return None
+    def get_active_collection_id(self, project) -> str:
+        manifest = self.get_manifest(project)
+        return manifest.get("active_collection_id")
+    def set_active_collection_id(self, project, collection_id: str) -> bool:
+        manifest = self.get_manifest(project)
+        cols = manifest.get("collections", [])
+        if any(c.get("id") == collection_id for c in cols):
+            if manifest.get("active_collection_id") == collection_id:
+                return True
+            manifest["active_collection_id"] = collection_id
+            col_boards = [b for b in manifest.get("boards", []) if b.get("collection_id") == collection_id]
+            if col_boards and not any(b.get("id") == manifest.get("active_board_id") for b in col_boards):
+                manifest["active_board_id"] = col_boards[0]["id"]
+            return self.save_manifest(project, manifest)
+        return False
+    def create_collection(self, project, name: str = "New Main Board") -> dict:
+        manifest = self.get_manifest(project)
+        new_id = str(uuid.uuid4())
+        order = len(manifest.get("collections", []))
+        entry = self.default_collection_entry(new_id, name.strip() or "New Main Board", order=order)
+        manifest["collections"].append(entry)
+        manifest["active_collection_id"] = new_id
+
+        # Auto-create initial working board inside the new collection
+        board_id = str(uuid.uuid4())
+        board_name = "Main Canvas"
+        board_entry = self.default_board_entry(board_id, board_name, order=0, collection_id=new_id)
+        board_data = self.default_board_data(board_id, board_name)
+        board_file = self.get_boards_dir(project) / f"{board_id}.lab.json"
+        try:
+            atomic_write_json(board_file, board_data)
+        except Exception:
+            pass
+        manifest["boards"].append(board_entry)
+        manifest["active_board_id"] = board_id
+
+        self.save_manifest(project, manifest)
+        self.board_updated.emit(project, board_id)
+        return entry
+    def rename_collection(self, project, collection_id: str, new_name: str) -> bool:
+        cleaned_name = new_name.strip()
+        if not cleaned_name:
+            return False
+        manifest = self.get_manifest(project)
+        found = False
+        for c in manifest.get("collections", []):
+            if c.get("id") == collection_id:
+                c["name"] = cleaned_name
+                c["modified"] = datetime.now().isoformat()
+                found = True
+                break
+        if not found:
+            return False
+        return self.save_manifest(project, manifest)
+    def delete_collection(self, project, collection_id: str) -> bool:
+        manifest = self.get_manifest(project)
+        cols = manifest.get("collections", [])
+        if len(cols) <= 1:
+            raise ValueError("Cannot delete the final remaining main board.")
+        target_idx = -1
+        for i, c in enumerate(cols):
+            if c.get("id") == collection_id:
+                target_idx = i
+                break
+        if target_idx == -1:
+            return False
+
+        boards_dir = self.get_boards_dir(project)
+        boards_to_remove = [b for b in manifest.get("boards", []) if b.get("collection_id") == collection_id]
+        for b in boards_to_remove:
+            b_file = boards_dir / f"{b['id']}.lab.json"
+            try:
+                if b_file.exists():
+                    b_file.unlink()
+            except Exception:
+                pass
+
+        manifest["boards"] = [b for b in manifest.get("boards", []) if b.get("collection_id") != collection_id]
+        cols.pop(target_idx)
+        manifest["collections"] = cols
+
+        fallback_idx = max(0, target_idx - 1)
+        fallback_col = cols[fallback_idx]
+        manifest["active_collection_id"] = fallback_col["id"]
+
+        remaining_col_boards = [b for b in manifest["boards"] if b.get("collection_id") == fallback_col["id"]]
+        if remaining_col_boards:
+            manifest["active_board_id"] = remaining_col_boards[0]["id"]
+        elif manifest["boards"]:
+            manifest["active_board_id"] = manifest["boards"][0]["id"]
+        else:
+            manifest["active_board_id"] = None
+
+        self.save_manifest(project, manifest)
+        new_active = manifest.get("active_board_id")
+        if new_active:
+            self.board_updated.emit(project, new_active)
+        return True
+    def list_boards(self, project, collection_id: str = None) -> list:
         manifest = self.get_manifest(project)
         boards = manifest.get("boards", [])
+        if collection_id is not None:
+            boards = [b for b in boards if b.get("collection_id") == collection_id]
         return sorted(boards, key=lambda b: (b.get("order", 0), b.get("created", "")))
     def get_board_entry(self, project, board_id_or_name: str) -> dict:
         manifest = self.get_manifest(project)
@@ -171,11 +341,15 @@ class LabService(QObject):
         return manifest.get("active_board_id")
     def set_active_board_id(self, project, board_id: str) -> bool:
         manifest = self.get_manifest(project)
-        if any(b.get("id") == board_id for b in manifest.get("boards", [])):
-            if manifest.get("active_board_id") == board_id:
-                return True
-            manifest["active_board_id"] = board_id
-            return self.save_manifest(project, manifest)
+        for b in manifest.get("boards", []):
+            if b.get("id") == board_id:
+                if manifest.get("active_board_id") == board_id:
+                    return True
+                manifest["active_board_id"] = board_id
+                col_id = b.get("collection_id")
+                if col_id:
+                    manifest["active_collection_id"] = col_id
+                return self.save_manifest(project, manifest)
         return False
     def get_board_path(self, project, board_id_or_name: str = "Main") -> Path:
         boards_dir = self.get_boards_dir(project)
@@ -185,11 +359,15 @@ class LabService(QObject):
         # Fallback sanitize if unknown identifier
         sanitized = "".join(c for c in board_id_or_name if c.isalnum() or c in ("_", "-")).strip() or "Main"
         return boards_dir / f"{sanitized}.lab.json"
-    def create_board(self, project, name: str = "Untitled Board") -> dict:
+    def create_board(self, project, name: str = "Untitled Board", collection_id: str = None) -> dict:
         manifest = self.get_manifest(project)
         new_id = str(uuid.uuid4())
-        order = len(manifest.get("boards", []))
-        entry = self.default_board_entry(new_id, name.strip() or "Untitled Board", order=order)
+        if not collection_id:
+            collection_id = manifest.get("active_collection_id")
+            if not collection_id and manifest.get("collections"):
+                collection_id = manifest["collections"][0]["id"]
+        order = len([b for b in manifest.get("boards", []) if b.get("collection_id") == collection_id])
+        entry = self.default_board_entry(new_id, name.strip() or "Untitled Board", order=order, collection_id=collection_id)
         board_data = self.default_board_data(new_id, entry["name"])
         board_file = self.get_boards_dir(project) / f"{new_id}.lab.json"
         try:
@@ -231,9 +409,11 @@ class LabService(QObject):
                 break
         if not source_entry:
             return None
+        source_col_id = source_entry.get("collection_id")
         source_name = source_entry["name"]
         if not new_name:
-            existing_names = {b["name"] for b in manifest.get("boards", [])}
+            col_boards = [b for b in manifest.get("boards", []) if b.get("collection_id") == source_col_id]
+            existing_names = {b["name"] for b in col_boards}
             candidate = f"{source_name} (Copy)"
             counter = 2
             while candidate in existing_names:
@@ -242,8 +422,12 @@ class LabService(QObject):
             new_name = candidate
         source_data = self.load_board(project, board_id)
         new_id = str(uuid.uuid4())
-        new_entry = self.default_board_entry(new_id, new_name, order=len(manifest.get("boards", [])))
-        # Deep copy board data and re-ID items
+        new_entry = self.default_board_entry(
+            new_id,
+            new_name,
+            order=len([b for b in manifest.get("boards", []) if b.get("collection_id") == source_col_id]),
+            collection_id=source_col_id,
+        )
         import copy
         new_board_data = copy.deepcopy(source_data)
         new_board_data["board_id"] = new_id
@@ -265,19 +449,35 @@ class LabService(QObject):
     def delete_board(self, project, board_id: str) -> bool:
         manifest = self.get_manifest(project)
         boards = manifest.get("boards", [])
-        if len(boards) <= 1:
-            raise ValueError("Cannot delete the final remaining board in a project.")
+        target_entry = None
         target_idx = -1
         for i, b in enumerate(boards):
             if b.get("id") == board_id:
+                target_entry = b
                 target_idx = i
                 break
         if target_idx == -1:
             return False
-        # If deleting the active board, fallback to nearest remaining board
+
+        col_id = target_entry.get("collection_id")
+        if col_id:
+            sibling_boards = [b for b in boards if b.get("collection_id") == col_id]
+            if len(sibling_boards) <= 1:
+                raise ValueError("Cannot delete the final remaining board.")
+        else:
+            if len(boards) <= 1:
+                raise ValueError("Cannot delete the final remaining board.")
+
+        # If deleting the active board, fallback to nearest sibling in same collection
         if manifest.get("active_board_id") == board_id:
-            fallback_idx = target_idx - 1 if target_idx > 0 else 1
-            manifest["active_board_id"] = boards[fallback_idx]["id"]
+            if col_id:
+                other_siblings = [b for b in boards if b.get("collection_id") == col_id and b.get("id") != board_id]
+                if other_siblings:
+                    manifest["active_board_id"] = other_siblings[0]["id"]
+            else:
+                fallback_idx = target_idx - 1 if target_idx > 0 else 1
+                manifest["active_board_id"] = boards[fallback_idx]["id"]
+
         del boards[target_idx]
         manifest["boards"] = boards
         self.save_manifest(project, manifest)
@@ -288,8 +488,40 @@ class LabService(QObject):
                 board_file.unlink()
         except Exception:
             pass
-        self.board_updated.emit(project, manifest.get("active_board_id"))
+        new_active = manifest.get("active_board_id")
+        if new_active:
+            self.board_updated.emit(project, new_active)
         return True
+    def get_orphaned_boards(self, project=None) -> list:
+        """Scan boards directory for .lab.json files not registered in board_manifest.json.
+        Read-only reporting helper: does not mutate, move, or delete any files.
+        """
+        boards_dir = self.get_boards_dir(project)
+        manifest = self.get_manifest(project)
+        manifest_ids = {b.get("id") for b in manifest.get("boards", []) if isinstance(b, dict) and b.get("id")}
+
+        orphans = []
+        if not boards_dir.exists():
+            return orphans
+
+        for board_file in boards_dir.glob("*.lab.json"):
+            stem = board_file.stem
+            data, err = safe_read_json(board_file)
+            bid = data.get("board_id", stem) if isinstance(data, dict) else stem
+            if bid not in manifest_ids and stem not in manifest_ids:
+                item_count = len(data.get("items", [])) if isinstance(data, dict) else 0
+                connector_count = len(data.get("connectors", [])) if isinstance(data, dict) else 0
+                orphans.append({
+                    "id": bid,
+                    "filename": board_file.name,
+                    "path": str(board_file),
+                    "name": data.get("name", "Untitled") if isinstance(data, dict) else stem,
+                    "item_count": item_count,
+                    "connector_count": connector_count,
+                    "has_content": (item_count > 0 or connector_count > 0),
+                    "error": err,
+                })
+        return orphans
     def load_board(self, project, board_id_or_name: str = "Main", board_name: str = None, board_id: str = None) -> dict:
         identifier = board_id or board_name or board_id_or_name
         entry = self.get_board_entry(project, identifier)
@@ -343,13 +575,28 @@ class LabService(QObject):
     def save_viewport(self, project, viewport_dict: dict, board_id_or_name: str = "Main", board_name: str = None, board_id: str = None) -> bool:
         identifier = board_id or board_name or board_id_or_name
         manifest = self.get_manifest(project)
-        if "last_view" not in manifest:
+        if "last_view" not in manifest or not isinstance(manifest["last_view"], dict):
             manifest["last_view"] = {}
         manifest["last_view"].update(viewport_dict)
-        self.save_manifest(project, manifest)
-        board_data = self.load_board(project, board_id_or_name=identifier)
+        # Direct atomic write of manifest to avoid unnecessary app-wide reload signal storm
+        manifest_path = self.get_manifest_path(project)
+        try:
+            atomic_write_json(manifest_path, manifest)
+        except Exception:
+            pass
+
+        entry = self.get_board_entry(project, identifier)
+        target_id = entry["id"] if entry else identifier
+        board_data = self.load_board(project, board_id_or_name=target_id)
+        if "viewport" not in board_data or not isinstance(board_data["viewport"], dict):
+            board_data["viewport"] = {}
         board_data["viewport"].update(viewport_dict)
-        return self.save_board(project, board_data, board_id_or_name=identifier)
+        path = self.get_board_path(project, target_id)
+        try:
+            atomic_write_json(path, board_data)
+            return True
+        except Exception:
+            return False
     def load_items(self, project, board_id_or_name: str = "Main", board_name: str = None, board_id: str = None) -> list:
         identifier = board_id or board_name or board_id_or_name
         board_data = self.load_board(project, board_id_or_name=identifier)

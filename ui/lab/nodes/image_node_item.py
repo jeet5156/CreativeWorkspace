@@ -45,6 +45,12 @@ class ImageNodeItem(NodeItem):
         self._project_location = None
         self._last_validated_time = 0.0
 
+        # Cached scaled pixmap for paint() performance
+        self._cached_scaled_pixmap = None
+        self._cached_scaled_size = None
+        self._cached_scaled_mode = None
+        self._cached_source_pixmap_id = None
+
         # Ensure layout dict in payload schema
         if "layout" not in self.payload or not isinstance(self.payload["layout"], dict):
             self.payload["layout"] = {
@@ -52,6 +58,12 @@ class ImageNodeItem(NodeItem):
                 "width": float(self.width),
                 "height": float(self.height),
             }
+
+    def _clear_pixmap_cache(self):
+        self._cached_scaled_pixmap = None
+        self._cached_scaled_size = None
+        self._cached_scaled_mode = None
+        self._cached_source_pixmap_id = None
 
     def validate_reference(self, force: bool = False) -> bool:
         """Event-driven lazy validation of image reference file existence with cooldown throttling.
@@ -506,21 +518,34 @@ class ImageNodeItem(NodeItem):
 
             fit_mode = self.payload.get("fit_mode", "fit")
             mode = Qt.KeepAspectRatioByExpanding if fit_mode == "fill" else Qt.KeepAspectRatio
+            target_sz = QSize(int(preview_rect.width()), int(preview_rect.height()))
+            source_id = id(self._pixmap)
 
-            if isinstance(self._pixmap, QPixmap):
-                scaled_pix = self._pixmap.scaled(QSize(int(preview_rect.width()), int(preview_rect.height())), mode, Qt.SmoothTransformation)
+            if (
+                self._cached_scaled_pixmap is not None
+                and self._cached_scaled_size == target_sz
+                and self._cached_scaled_mode == mode
+                and self._cached_source_pixmap_id == source_id
+            ):
+                scaled_pix = self._cached_scaled_pixmap
+            else:
+                if isinstance(self._pixmap, QPixmap):
+                    scaled_pix = self._pixmap.scaled(target_sz, mode, Qt.SmoothTransformation)
+                elif isinstance(self._pixmap, QImage):
+                    scaled_pix = QPixmap.fromImage(self._pixmap.scaled(target_sz, mode, Qt.SmoothTransformation))
+                else:
+                    scaled_pix = None
+                self._cached_scaled_pixmap = scaled_pix
+                self._cached_scaled_size = target_sz
+                self._cached_scaled_mode = mode
+                self._cached_source_pixmap_id = source_id
+
+            if scaled_pix and not scaled_pix.isNull():
                 px_w, px_h = scaled_pix.width(), scaled_pix.height()
                 px_x = preview_rect.left() + (preview_rect.width() - px_w) / 2.0
                 px_y = preview_rect.top() + (preview_rect.height() - px_h) / 2.0
                 target_rect = QRectF(px_x, px_y, px_w, px_h).intersected(preview_rect)
                 painter.drawPixmap(target_rect.toRect(), scaled_pix)
-            elif isinstance(self._pixmap, QImage):
-                scaled_img = self._pixmap.scaled(QSize(int(preview_rect.width()), int(preview_rect.height())), mode, Qt.SmoothTransformation)
-                px_w, px_h = scaled_img.width(), scaled_img.height()
-                px_x = preview_rect.left() + (preview_rect.width() - px_w) / 2.0
-                px_y = preview_rect.top() + (preview_rect.height() - px_h) / 2.0
-                target_rect = QRectF(px_x, px_y, px_w, px_h).intersected(preview_rect)
-                painter.drawImage(target_rect.toRect(), scaled_img)
 
         # 5. Draw Selection Ring
         self.draw_selection_outline(painter, rect, self.CORNER_RADIUS)

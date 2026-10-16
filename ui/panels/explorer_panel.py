@@ -39,6 +39,7 @@ class ExplorerPanel(QWidget):
         super().__init__()
 
         layout = QVBoxLayout(self)
+        self.setMinimumWidth(220)
 
         # Search box (global explorer search)
         from PySide6.QtWidgets import QLineEdit, QListWidget, QListWidgetItem
@@ -159,6 +160,8 @@ class ExplorerPanel(QWidget):
                         self._lab_signals_connected = True
                     except Exception:
                         pass
+                if hasattr(self, 'lab_root') and self.lab_root and self.lab_root.isExpanded():
+                    self.refresh_lab_node(None)
         except Exception:
             self._context = None
 
@@ -178,10 +181,69 @@ class ExplorerPanel(QWidget):
         selected_board_id = current_selected_item.data(0, Qt.UserRole + 20) if current_selected_item and current_selected_item.data(0, ROLE_NODE_TYPE) == "board" else None
         selected_project = current_selected_item.data(0, ROLE_PROJECT) if current_selected_item else None
 
-        target_node = None
         if not project:
             target_node = getattr(self, "lab_root", None)
-        elif hasattr(self, "_project_items") and project and getattr(project, "location", None):
+            if not target_node:
+                return
+
+            was_expanded = target_node.isExpanded()
+            collections = lab_svc.list_collections(None)
+            active_col_id = lab_svc.get_active_collection_id(None)
+            active_b_id = lab_svc.get_active_board_id(None)
+
+            was_blocked = self.tree.signalsBlocked()
+            self.tree.blockSignals(True)
+            try:
+                target_node.takeChildren()
+                new_selected_item = None
+
+                for col in collections:
+                    col_name = col.get("name", "Main Board")
+                    col_id = col.get("id")
+                    col_item = QTreeWidgetItem([f"📁 {col_name}"])
+                    col_item.setData(0, ROLE_PROJECT, None)
+                    col_item.setData(0, ROLE_SECTION, "workbench")
+                    col_item.setData(0, ROLE_REL_PATH, col_name)
+                    col_item.setData(0, Qt.UserRole + 21, col_id)
+                    col_item.setData(0, ROLE_NODE_TYPE, "collection")
+                    col_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+
+                    boards = lab_svc.list_boards(None, collection_id=col_id)
+                    for b in boards:
+                        b_name = b.get("name", "Board")
+                        b_id = b.get("id")
+                        child = QTreeWidgetItem([f"🎨 {b_name}"])
+                        child.setData(0, ROLE_PROJECT, None)
+                        child.setData(0, ROLE_SECTION, "workbench")
+                        child.setData(0, ROLE_REL_PATH, b_name)
+                        child.setData(0, Qt.UserRole + 20, b_id)
+                        child.setData(0, Qt.UserRole + 21, col_id)
+                        child.setData(0, ROLE_NODE_TYPE, "board")
+                        child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+                        col_item.addChild(child)
+
+                        if selected_board_id and b_id == selected_board_id and selected_project is None:
+                            new_selected_item = child
+
+                    target_node.addChild(col_item)
+                    if col_id == active_col_id or len(collections) == 1:
+                        col_item.setExpanded(True)
+
+                if collections:
+                    target_node.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                    if was_expanded:
+                        target_node.setExpanded(True)
+                else:
+                    target_node.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
+
+                if new_selected_item:
+                    self.tree.setCurrentItem(new_selected_item)
+            finally:
+                self.tree.blockSignals(was_blocked)
+            return
+
+        target_node = None
+        if hasattr(self, "_project_items") and project and getattr(project, "location", None):
             loc_str = str(project.location)
             p_item = self._project_items.get(loc_str)
             if p_item:
@@ -194,10 +256,9 @@ class ExplorerPanel(QWidget):
         if not target_node:
             return
 
-        # Fetch fresh boards list from LabService strictly enforcing contract
+        # Fetch fresh boards list for project
         boards = lab_svc.list_boards(project)
 
-        # Block tree signals during update to prevent unintended click events
         was_blocked = self.tree.signalsBlocked()
         self.tree.blockSignals(True)
         try:
@@ -217,8 +278,7 @@ class ExplorerPanel(QWidget):
                 target_node.addChild(child)
 
                 if selected_board_id and b_id == selected_board_id and (
-                    (selected_project is None and project is None) or 
-                    (selected_project and project and str(getattr(selected_project, 'location', '')) == str(getattr(project, 'location', '')))
+                    selected_project and project and str(getattr(selected_project, 'location', '')) == str(getattr(project, 'location', ''))
                 ):
                     new_selected_item = child
 
@@ -373,10 +433,18 @@ class ExplorerPanel(QWidget):
             return
 
         node_type = item.data(0, ROLE_NODE_TYPE)
+        if node_type == "collection":
+            col_id = item.data(0, Qt.UserRole + 21)
+            col_name = item.data(0, ROLE_REL_PATH)
+            if getattr(self, "_context", None) and getattr(self._context, "workspace_manager", None):
+                self._context.workspace_manager.show_workbench(collection_id=col_id)
+            return
+
         if node_type == "board":
             project = item.data(0, ROLE_PROJECT)
             board_name = item.data(0, ROLE_REL_PATH)
             board_id = item.data(0, Qt.UserRole + 20)
+            col_id = item.data(0, Qt.UserRole + 21)
             if getattr(self, "_context", None) and getattr(self._context, "workspace_manager", None):
                 wm = self._context.workspace_manager
                 if project:
@@ -384,10 +452,7 @@ class ExplorerPanel(QWidget):
                     if hasattr(wm, "lab_panel") and wm.lab_panel:
                         wm.lab_panel.show_project(project, board_id=board_id, board_name=board_name)
                 else:
-                    wm.show_workbench()
-                    if hasattr(wm, "lab_panel") and wm.lab_panel:
-                        wm.lab_panel.show_project(None, board_id=board_id, board_name=board_name)
-                wm.show_module("lab")
+                    wm.show_workbench(collection_id=col_id, board_id=board_id, board_name=board_name)
             return
 
         mod_key = item.data(0, Qt.UserRole + 1)
@@ -443,23 +508,7 @@ class ExplorerPanel(QWidget):
         project = item.data(0, ROLE_PROJECT)
         mod_key = item.data(0, Qt.UserRole + 1)
         if (mod_key == "workbench" or item == getattr(self, "lab_root", None)) and not project:
-            lab_svc = getattr(self._context, "lab_service", None) if getattr(self, "_context", None) else None
-            if lab_svc:
-                boards = lab_svc.list_boards(None)
-                item.takeChildren()
-                for b in boards:
-                    b_name = b.get("name", "Board")
-                    b_id = b.get("id")
-                    child = QTreeWidgetItem([f"🎨 {b_name}"])
-                    child.setData(0, ROLE_PROJECT, None)
-                    child.setData(0, ROLE_SECTION, "lab")
-                    child.setData(0, ROLE_REL_PATH, b_name)
-                    child.setData(0, Qt.UserRole + 20, b_id)
-                    child.setData(0, ROLE_NODE_TYPE, "board")
-                    child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
-                    item.addChild(child)
-                if boards:
-                    item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+            self.refresh_lab_node(None)
             return
 
         section = item.data(0, ROLE_SECTION)
@@ -971,22 +1020,102 @@ class ExplorerPanel(QWidget):
         self.delete_folder_action = QAction("Delete Folder...", self)
         self.delete_folder_action.triggered.connect(self._request_delete_folder)
 
+        # Collection actions
+        self.new_collection_action = QAction("➕ New Main Board...", self)
+        self.new_collection_action.triggered.connect(self._request_new_collection)
+
+        self.open_collection_action = QAction("Open Main Board", self)
+        self.open_collection_action.triggered.connect(self._request_open_collection)
+
+        self.rename_collection_action = QAction("✏️ Rename Main Board...", self)
+        self.rename_collection_action.triggered.connect(self._request_rename_collection)
+
+        self.delete_collection_action = QAction("🗑️ Delete Main Board", self)
+        self.delete_collection_action.triggered.connect(self._request_delete_collection)
+
+        # Board actions
+        self.new_board_action = QAction("➕ New Board...", self)
+        self.new_board_action.triggered.connect(self._request_new_board)
+
+        self.open_board_action = QAction("Open Board", self)
+        self.open_board_action.triggered.connect(self._request_open_board)
+
+        self.rename_board_action = QAction("✏️ Rename Board...", self)
+        self.rename_board_action.triggered.connect(self._request_rename_board)
+
+        self.duplicate_board_action = QAction("📋 Duplicate Board", self)
+        self.duplicate_board_action.triggered.connect(self._request_duplicate_board)
+
+        self.delete_board_action = QAction("🗑️ Delete Board", self)
+        self.delete_board_action.triggered.connect(self._request_delete_board)
+
     def _get_active_context_item(self) -> QTreeWidgetItem | None:
         return getattr(self, '_context_menu_item', None) or self.tree.currentItem()
 
     def on_context_menu(self, position):
         item = self.tree.itemAt(position)
-        project = item.data(0, Qt.UserRole) if item else None
-        section = item.data(0, Qt.UserRole + 1) if item else None
-        node_type = item.data(0, ROLE_NODE_TYPE) if item else None
-
-        if not isinstance(project, Project):
+        if not item:
             return
 
-        self._context_menu_project = project
         self._context_menu_item = item
+        project = item.data(0, ROLE_PROJECT)
+        section = item.data(0, ROLE_SECTION)
+        node_type = item.data(0, ROLE_NODE_TYPE)
+        self._context_menu_project = project
 
         menu = QMenu(self)
+
+        # 1. Global Workbench Root
+        if item == getattr(self, "lab_root", None) or (section == "workbench" and node_type != "collection" and node_type != "board"):
+            open_wb_act = QAction("Open Workbench", self)
+            open_wb_act.triggered.connect(lambda: self.navigation_requested.emit("workbench"))
+            menu.addAction(open_wb_act)
+            menu.addAction(self.new_collection_action)
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+            self._context_menu_project = None
+            self._context_menu_item = None
+            return
+
+        # 2. Collection items (Level 1 Workbench Main Board)
+        if node_type == "collection":
+            menu.addAction(self.open_collection_action)
+            menu.addAction(self.new_board_action)
+            menu.addAction(self.rename_collection_action)
+            menu.addSeparator()
+            menu.addAction(self.delete_collection_action)
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+            self._context_menu_project = None
+            self._context_menu_item = None
+            return
+
+        # 3. Board items (Workbench board or Project Lab board)
+        if node_type == "board":
+            menu.addAction(self.open_board_action)
+            menu.addAction(self.rename_board_action)
+            menu.addAction(self.duplicate_board_action)
+            menu.addSeparator()
+            menu.addAction(self.delete_board_action)
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+            self._context_menu_project = None
+            self._context_menu_item = None
+            return
+
+        # 3. Project Lab category root
+        if section == "lab" and isinstance(project, Project):
+            open_lab_act = QAction("Open Creative Lab", self)
+            open_lab_act.triggered.connect(lambda: self.project_selected.emit(project, "lab", None))
+            menu.addAction(open_lab_act)
+            menu.addAction(self.new_board_action)
+            menu.exec(self.tree.viewport().mapToGlobal(position))
+            self._context_menu_project = None
+            self._context_menu_item = None
+            return
+
+        # 4. Remaining project items
+        if not isinstance(project, Project):
+            self._context_menu_project = None
+            self._context_menu_item = None
+            return
 
         if node_type == "project":
             menu.addAction(self.open_project_action)
@@ -1154,6 +1283,218 @@ class ExplorerPanel(QWidget):
                     pass
         except Exception:
             pass
+
+    # ---------------------
+    # Collection Context Actions
+    # ---------------------
+    def _request_new_collection(self):
+        if not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "New Main Board", "Enter main board collection name:", text="New Collection")
+        if ok and name.strip():
+            entry = self._context.lab_service.create_collection(None, name.strip())
+            if entry and getattr(self._context, "workspace_manager", None):
+                wm = self._context.workspace_manager
+                wm.show_workbench(collection_id=entry["id"])
+
+    def _request_open_collection(self):
+        item = self._get_active_context_item()
+        if not item or not getattr(self, "_context", None) or not getattr(self._context, "workspace_manager", None):
+            return
+        col_id = item.data(0, Qt.UserRole + 21)
+        if col_id:
+            self._context.workspace_manager.show_workbench(collection_id=col_id)
+
+    def _request_rename_collection(self):
+        item = self._get_active_context_item()
+        if not item or not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+        col_id = item.data(0, Qt.UserRole + 21)
+        col_name = item.data(0, ROLE_REL_PATH) or "Main Board"
+        from PySide6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(self, "Rename Main Board", "Enter new name:", text=col_name)
+        if ok and new_name.strip() and new_name.strip() != col_name:
+            lab_svc = self._context.lab_service
+            if lab_svc.rename_collection(None, col_id, new_name.strip()):
+                item.setText(0, f"📁 {new_name.strip()}")
+                item.setData(0, ROLE_REL_PATH, new_name.strip())
+                wm = getattr(self._context, "workspace_manager", None)
+                if wm and hasattr(wm, "lab_panel") and wm.lab_panel:
+                    lp = wm.lab_panel
+                    if lp._current_project is None and lp._current_collection_id == col_id:
+                        lp.board_label.setText(f"— {new_name.strip()} › {lp._current_board_name} Canvas")
+                    lp._refresh_boards_sidebar()
+
+    def _request_delete_collection(self):
+        item = self._get_active_context_item()
+        if not item or not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+        col_id = item.data(0, Qt.UserRole + 21)
+        col_name = item.data(0, ROLE_REL_PATH) or "Main Board"
+        lab_svc = self._context.lab_service
+        cols = lab_svc.list_collections(None)
+        if len(cols) <= 1:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Cannot Delete Main Board",
+                "Cannot delete the final remaining main board in Workbench."
+            )
+            return
+
+        num_children = len(lab_svc.list_boards(None, collection_id=col_id))
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Delete Main Board",
+            f"Are you sure you want to delete main board '{col_name}' and its {num_children} working boards?\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            if lab_svc.delete_collection(None, col_id):
+                new_col = lab_svc.get_active_collection_id(None)
+                new_active = lab_svc.get_active_board_id(None)
+                wm = getattr(self._context, "workspace_manager", None)
+                if wm and hasattr(wm, "lab_panel") and wm.lab_panel:
+                    lp = wm.lab_panel
+                    if lp._current_project is None:
+                        lp.show_project(None, board_id=new_active, collection_id=new_col, force_reload=True)
+
+    # ---------------------
+    # Board Context Actions
+    # ---------------------
+    def _request_new_board(self):
+        item = self._get_active_context_item()
+        project = item.data(0, ROLE_PROJECT) if item else self._context_menu_project
+        if not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+        node_type = item.data(0, ROLE_NODE_TYPE) if item else None
+        col_id = None
+        if not project:
+            if node_type == "collection":
+                col_id = item.data(0, Qt.UserRole + 21)
+            elif node_type == "board":
+                col_id = item.data(0, Qt.UserRole + 21)
+            if not col_id:
+                col_id = self._context.lab_service.get_active_collection_id(None)
+
+        from PySide6.QtWidgets import QInputDialog
+        title = f"New Lab Board ({project.name})" if project else "New Working Board"
+        name, ok = QInputDialog.getText(self, title, "Enter board name:", text="Untitled Board")
+        if ok and name.strip():
+            entry = self._context.lab_service.create_board(project, name.strip(), collection_id=col_id)
+            if entry and getattr(self._context, "workspace_manager", None):
+                wm = self._context.workspace_manager
+                if project:
+                    wm.show_project(project, section="lab")
+                    if hasattr(wm, "lab_panel") and wm.lab_panel:
+                        wm.lab_panel.show_project(project, board_id=entry["id"])
+                else:
+                    wm.show_workbench(collection_id=col_id, board_id=entry["id"])
+
+    def _request_open_board(self):
+        item = self._get_active_context_item()
+        if not item:
+            return
+        project = item.data(0, ROLE_PROJECT)
+        board_id = item.data(0, Qt.UserRole + 20)
+        board_name = item.data(0, ROLE_REL_PATH)
+        col_id = item.data(0, Qt.UserRole + 21)
+        if getattr(self, "_context", None) and getattr(self._context, "workspace_manager", None):
+            wm = self._context.workspace_manager
+            if project:
+                wm.show_project(project, section="lab")
+                if hasattr(wm, "lab_panel") and wm.lab_panel:
+                    wm.lab_panel.show_project(project, board_id=board_id, board_name=board_name)
+            else:
+                wm.show_workbench(collection_id=col_id, board_id=board_id, board_name=board_name)
+
+    def _request_rename_board(self):
+        item = self._get_active_context_item()
+        if not item or not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+        project = item.data(0, ROLE_PROJECT)
+        board_id = item.data(0, Qt.UserRole + 20)
+        board_name = item.data(0, ROLE_REL_PATH) or "Board"
+        from PySide6.QtWidgets import QInputDialog
+        title = f"Rename Board ({project.name})" if project else "Rename Workbench Board"
+        new_name, ok = QInputDialog.getText(self, title, "Enter new board name:", text=board_name)
+        if ok and new_name.strip() and new_name.strip() != board_name:
+            lab_svc = self._context.lab_service
+            if lab_svc.rename_board(project, board_id, new_name.strip()):
+                item.setText(0, f"🎨 {new_name.strip()}")
+                item.setData(0, ROLE_REL_PATH, new_name.strip())
+                # Update LabPanel if it's currently showing this board
+                wm = getattr(self._context, "workspace_manager", None)
+                if wm and hasattr(wm, "lab_panel") and wm.lab_panel:
+                    lp = wm.lab_panel
+                    lp_proj_same = (lp._current_project == project) if (lp._current_project and project) else (lp._current_project is None and project is None)
+                    if lp_proj_same and lp._current_board_id == board_id:
+                        lp._current_board_name = new_name.strip()
+                        if lp._current_project is None and lp._current_collection_id:
+                            col = lab_svc.get_collection(None, lp._current_collection_id)
+                            col_name = col["name"] if col else "Main"
+                            lp.board_label.setText(f"— {col_name} › {new_name.strip()} Canvas")
+                        else:
+                            lp.board_label.setText(f"— {new_name.strip()} Canvas")
+                    lp._refresh_boards_sidebar()
+
+    def _request_duplicate_board(self):
+        item = self._get_active_context_item()
+        if not item or not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+        project = item.data(0, ROLE_PROJECT)
+        board_id = item.data(0, Qt.UserRole + 20)
+        col_id = item.data(0, Qt.UserRole + 21)
+        new_entry = self._context.lab_service.duplicate_board(project, board_id)
+        if new_entry and getattr(self._context, "workspace_manager", None):
+            wm = self._context.workspace_manager
+            if project:
+                wm.show_project(project, section="lab")
+                if hasattr(wm, "lab_panel") and wm.lab_panel:
+                    wm.lab_panel.show_project(project, board_id=new_entry["id"])
+            else:
+                wm.show_workbench(collection_id=col_id, board_id=new_entry["id"])
+
+    def _request_delete_board(self):
+        item = self._get_active_context_item()
+        if not item or not getattr(self, "_context", None) or not getattr(self._context, "lab_service", None):
+            return
+        project = item.data(0, ROLE_PROJECT)
+        board_id = item.data(0, Qt.UserRole + 20)
+        col_id = item.data(0, Qt.UserRole + 21)
+        board_name = item.data(0, ROLE_REL_PATH) or "Board"
+        lab_svc = self._context.lab_service
+        boards = lab_svc.list_boards(project, collection_id=col_id)
+        if len(boards) <= 1:
+            from PySide6.QtWidgets import QMessageBox
+            scope_str = f"project '{project.name}'" if project else "this main board"
+            QMessageBox.warning(
+                self,
+                "Cannot Delete Board",
+                f"Cannot delete the final remaining board in {scope_str}."
+            )
+            return
+
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Delete Board",
+            f"Are you sure you want to delete board '{board_name}'?\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            if lab_svc.delete_board(project, board_id):
+                new_active = lab_svc.get_active_board_id(project)
+                wm = getattr(self._context, "workspace_manager", None)
+                if wm and hasattr(wm, "lab_panel") and wm.lab_panel:
+                    lp = wm.lab_panel
+                    lp_proj_same = (lp._current_project == project) if (lp._current_project and project) else (lp._current_project is None and project is None)
+                    if lp_proj_same:
+                        lp._switch_to_board(new_active, force_reload=True)
 
     # ---------------------
     # Drag & Drop

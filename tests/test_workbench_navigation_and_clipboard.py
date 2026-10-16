@@ -487,10 +487,14 @@ class TestWorkbenchNavigationAndClipboard(unittest.TestCase):
         self.assertEqual(explorer.tree_expanded_callbacks[0], explorer.lab_root)
         self.assertEqual(explorer.item_expanded_callbacks[0], explorer.lab_root)
 
-        # Verify children populated cleanly
-        child_names = [explorer.lab_root.child(i).text(0) for i in range(explorer.lab_root.childCount())]
-        self.assertIn("🎨 Global Test Board", child_names)
-        self.assertEqual(len(child_names), len(set(child_names)), "All populated boards must be distinct without duplicate entries")
+        # Verify children populated cleanly in 2-level hierarchy
+        board_names = []
+        for i in range(explorer.lab_root.childCount()):
+            col_child = explorer.lab_root.child(i)
+            for j in range(col_child.childCount()):
+                board_names.append(col_child.child(j).text(0))
+        self.assertIn("🎨 Global Test Board", board_names)
+        self.assertEqual(len(board_names), len(set(board_names)), "All populated boards must be distinct without duplicate entries")
 
 
 if __name__ == "__main__":

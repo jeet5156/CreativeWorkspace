@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QSize
 
 from ui.panels.dashboard_panel import DashboardPanel
 from ui.panels.notes_panel import NotesPanel
@@ -55,6 +55,9 @@ class WorkspacePanel(QWidget):
 
         # enable drop on workspace
         self.setAcceptDrops(True)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(350, 250)
 
     def set_context(self, context):
         """Provide AppContext so panel can listen to asset updates."""

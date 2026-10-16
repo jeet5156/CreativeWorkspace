@@ -82,7 +82,19 @@ class TestExplorerBoardRefresh(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _get_node_board_names(self, tree_node):
-        return [tree_node.child(i).text(0).replace("🎨 ", "") for i in range(tree_node.childCount())]
+        names = []
+        for i in range(tree_node.childCount()):
+            child = tree_node.child(i)
+            text = child.text(0)
+            if text.startswith("🎨 "):
+                names.append(text.replace("🎨 ", ""))
+            elif text.startswith("📁 "):
+                for j in range(child.childCount()):
+                    subchild = child.child(j)
+                    subtext = subchild.text(0)
+                    if subtext.startswith("🎨 "):
+                        names.append(subtext.replace("🎨 ", ""))
+        return names
 
     def test_1_create_project_board_refreshes_explorer(self):
         """Verify creating a project board updates Explorer immediately."""
