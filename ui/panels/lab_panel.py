@@ -99,7 +99,7 @@ class LabPanel(QWidget):
         self.title_label = QLabel("🧪 <b>Creative Lab</b>")
         header_layout.addWidget(self.title_label)
 
-        self.board_label = QLabel("— Main Canvas")
+        self.board_label = QLabel("— 🎨 Main Canvas")
         self.board_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
         header_layout.addWidget(self.board_label)
 
@@ -339,6 +339,22 @@ class LabPanel(QWidget):
         if hasattr(self, "canvas") and self.canvas and hasattr(self.canvas, "set_context"):
             self.canvas.set_context(context)
         self._update_canvas_context()
+        if context and getattr(context, "lab_service", None):
+            if not getattr(self, "_lab_signals_connected", False):
+                try:
+                    context.lab_service.manifest_updated.connect(self._on_manifest_updated)
+                    context.lab_service.board_updated.connect(self._on_manifest_updated)
+                    self._lab_signals_connected = True
+                except Exception:
+                    pass
+
+    def _on_manifest_updated(self, project, board_id=None):
+        try:
+            is_same_project = (self._current_project == project) if (self._current_project and project) else (self._current_project is None and project is None)
+            if is_same_project:
+                self._refresh_boards_sidebar()
+        except Exception:
+            pass
 
     def _update_canvas_context(self):
         if hasattr(self, "canvas") and self.canvas:
@@ -496,10 +512,11 @@ class LabPanel(QWidget):
             return
 
         # 1. Flush pending saves of previous board
-        self.flush_pending_saves()
+        if self._current_board_id:
+            self.flush_pending_saves()
 
         # 2. Persist viewport of previous board
-        if hasattr(self, "_persist_viewport"):
+        if self._current_board_id and hasattr(self, "_persist_viewport"):
             self._persist_viewport()
 
         if entry:
@@ -511,9 +528,9 @@ class LabPanel(QWidget):
                 if self._current_project is None and self._current_collection_id:
                     col = lab_svc.get_collection(None, self._current_collection_id)
                     col_name = col["name"] if col else "Main"
-                    self.board_label.setText(f"— {col_name} › {self._current_board_name} Canvas")
+                    self.board_label.setText(f"— {col_name} › 🎨 {self._current_board_name} Canvas")
                 else:
-                    self.board_label.setText(f"— {self._current_board_name} Canvas")
+                    self.board_label.setText(f"— 🎨 {self._current_board_name} Canvas")
 
         if self._current_board_id:
             lab_svc.set_active_board_id(self._current_project, self._current_board_id)
@@ -595,7 +612,7 @@ class LabPanel(QWidget):
                     self.collection_combo.clear()
                     active_idx = 0
                     for idx, c in enumerate(collections):
-                        self.collection_combo.addItem(f"📁 {c['name']}", c["id"])
+                        self.collection_combo.addItem(f"🗂️ {c['name']}", c["id"])
                         if c["id"] == self._current_collection_id:
                             active_idx = idx
                     if collections:
@@ -683,7 +700,7 @@ class LabPanel(QWidget):
         if ok and name.strip() and name.strip() != current_name:
             if lab_svc.rename_collection(None, self._current_collection_id, name.strip()):
                 if self._current_project is None:
-                    self.board_label.setText(f"— {name.strip()} › {self._current_board_name} Canvas")
+                    self.board_label.setText(f"— {name.strip()} › 🎨 {self._current_board_name} Canvas")
                 self._refresh_boards_sidebar()
 
     def _on_delete_collection_clicked(self):
@@ -788,9 +805,9 @@ class LabPanel(QWidget):
                     if self._current_project is None and self._current_collection_id:
                         col = lab_svc.get_collection(None, self._current_collection_id)
                         col_name = col["name"] if col else "Main"
-                        self.board_label.setText(f"— {col_name} › {self._current_board_name} Canvas")
+                        self.board_label.setText(f"— {col_name} › 🎨 {self._current_board_name} Canvas")
                     else:
-                        self.board_label.setText(f"— {self._current_board_name} Canvas")
+                        self.board_label.setText(f"— 🎨 {self._current_board_name} Canvas")
                 self._refresh_boards_sidebar()
 
     def _on_rename_active_board_clicked(self):
@@ -828,6 +845,12 @@ class LabPanel(QWidget):
 
         if reply == QMessageBox.Yes:
             was_active = (board_id == self._current_board_id)
+            if hasattr(self, "_item_save_timer") and self._item_save_timer.isActive():
+                self._item_save_timer.stop()
+            if hasattr(self, "_save_timer") and self._save_timer.isActive():
+                self._save_timer.stop()
+            if was_active:
+                self._current_board_id = None
             if lab_svc.delete_board(self._current_project, board_id):
                 new_active = lab_svc.get_active_board_id(self._current_project)
                 if was_active:

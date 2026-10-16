@@ -377,10 +377,12 @@ class TestWorkbenchHierarchy(unittest.TestCase):
         self.assertEqual(col2_item.data(0, ROLE_NODE_TYPE), "collection")
         self.assertIn("AI Tools", col1_item.text(0))
         self.assertIn("Art Production", col2_item.text(0))
+        self.assertTrue(col1_item.text(0).startswith("🗂️"), "Workbench collections must use distinct collection icon 🗂️")
+        self.assertFalse(col1_item.text(0).startswith("📁"), "Workbench collections must not use ordinary project folder icon 📁")
 
-        # Check child board under col1
-        col1_board_names = [col1_item.child(i).text(0) for i in range(col1_item.childCount())]
-        self.assertTrue(any("Diffusion Board" in name for name in col1_board_names))
+        # Check that individual boards are NOT displayed under collections in Explorer tree (Explorer presentation change)
+        self.assertEqual(col1_item.childCount(), 0)
+        self.assertEqual(col2_item.childCount(), 0)
 
         # Check LabPanel UI integration
         lp = LabPanel(self.context)
@@ -389,6 +391,10 @@ class TestWorkbenchHierarchy(unittest.TestCase):
         self.assertEqual(lp._current_board_id, b_ai["id"])
         self.assertIn("AI Tools", lp.board_label.text())
         self.assertIn("Diffusion Board", lp.board_label.text())
+        # Individual boards remain visible and selectable in LabPanel boards sidebar
+        board_items = [lp.boards_list.item(i).text() for i in range(lp.boards_list.count())]
+        self.assertTrue(any("Diffusion Board" in name for name in board_items))
+        self.assertTrue(all(name.startswith("🎨 ") for name in board_items))
 
         # Switch collection in LabPanel
         lp.show_project(None, collection_id=col2["id"], board_id=b_art["id"])

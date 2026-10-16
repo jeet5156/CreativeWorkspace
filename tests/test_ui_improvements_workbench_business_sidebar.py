@@ -69,24 +69,51 @@ class TestUIImprovements(unittest.TestCase):
 
     def test_2_workbench_tree_expansion_and_refresh_preserves_icon(self):
         """Refreshing or expanding Workbench root preserves root icon and level distinctions."""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QInputDialog
+        from ui.panels.lab_panel import LabPanel
+
         explorer = ExplorerPanel()
         explorer.set_context(self.context)
 
-        # Expand and refresh
+        # 1. Workbench root keeps tools icon 🛠️
         explorer.refresh_lab_node(None)
         self.assertTrue(explorer.lab_root.text(0).startswith("🛠️"))
+        self.assertFalse(explorer.lab_root.text(0).startswith("📁"))
 
-        # Verify child collections use collection folder icon and boards use palette icon
-        self.lab_svc.create_collection(None, "AI Concepts")
+        # 2. Main Workbench collections use distinct collection icon 🗂️ (not 📁)
+        c_entry = self.lab_svc.create_collection(None, "AI Concepts")
         explorer.refresh_lab_node(None)
 
         self.assertTrue(explorer.lab_root.text(0).startswith("🛠️"))
         col_item = explorer.lab_root.child(0)
-        self.assertTrue(col_item.text(0).startswith("📁"))
+        self.assertTrue(col_item.text(0).startswith("🗂️"), "Workbench collections must use distinct collection icon 🗂️")
+        self.assertFalse(col_item.text(0).startswith("📁"), "Workbench collections must not use ordinary project folder icon 📁")
 
-        if col_item.childCount() > 0:
-            board_item = col_item.child(0)
-            self.assertTrue(board_item.text(0).startswith("🎨"))
+        # Renaming collection preserves 🗂️
+        col_id = col_item.data(0, Qt.UserRole + 21)
+        with patch.object(QInputDialog, "getText", return_value=("AI Research", True)):
+            explorer.tree.setCurrentItem(col_item)
+            explorer._request_rename_collection()
+        self.assertTrue(col_item.text(0).startswith("🗂️"))
+        self.assertIn("AI Research", col_item.text(0))
+        self.assertFalse(col_item.text(0).startswith("📁"))
+
+        # 3. Palette icon 🎨 for individual canvas boards in LabPanel and breadcrumbs
+        lp = LabPanel(self.context)
+        lp.show_project(None, collection_id=col_id)
+        self.assertIn("🎨", lp.board_label.text())
+        self.assertTrue(all(lp.boards_list.item(i).text().startswith("🎨") for i in range(lp.boards_list.count())))
+        self.assertTrue(all(lp.collection_combo.itemText(i).startswith("🗂️") for i in range(lp.collection_combo.count())))
+        self.assertFalse(any(lp.collection_combo.itemText(i).startswith("📁") for i in range(lp.collection_combo.count())))
+
+        # 4. Project and project-folder icons remain unchanged (📁)
+        proj_dir = self.tmp_dir / "projects" / "IconTestProject"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        proj = self.project_svc.create_project("IconTestProject", "film", str(self.tmp_dir / "projects"), "Test project")
+        explorer.load_projects([proj])
+        self.assertTrue(explorer.projects_root.text(0).startswith("📁"))
+
 
     # -------------------------------------------------------------
     # 2. Business Hub Landing Page

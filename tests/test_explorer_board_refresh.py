@@ -12,6 +12,7 @@ from models.project import Project
 from services.project_service import ProjectService
 from services.lab_service import LabService
 from ui.panels.explorer_panel import ExplorerPanel, ROLE_PROJECT, ROLE_SECTION, ROLE_NODE_TYPE
+from ui.panels.lab_panel import LabPanel
 
 
 class TestExplorerBoardRefresh(unittest.TestCase):
@@ -77,6 +78,9 @@ class TestExplorerBoardRefresh(unittest.TestCase):
                 break
         self.explorer._on_item_expanded(self.proj_lab_node)
 
+        self.lab_panel = LabPanel(self.context)
+        self.lab_panel.show_project(None)
+
     def tearDown(self):
         LabService.get_boards_dir = self.orig_get_boards_dir
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -88,13 +92,17 @@ class TestExplorerBoardRefresh(unittest.TestCase):
             text = child.text(0)
             if text.startswith("🎨 "):
                 names.append(text.replace("🎨 ", ""))
-            elif text.startswith("📁 "):
+            elif text.startswith("📁 ") or text.startswith("🗂️ "):
                 for j in range(child.childCount()):
                     subchild = child.child(j)
                     subtext = subchild.text(0)
                     if subtext.startswith("🎨 "):
                         names.append(subtext.replace("🎨 ", ""))
         return names
+
+    def _get_panel_board_names(self):
+        self.lab_panel._refresh_boards_sidebar()
+        return [self.lab_panel.boards_list.item(i).text().replace("🎨 ", "") for i in range(self.lab_panel.boards_list.count())]
 
     def test_1_create_project_board_refreshes_explorer(self):
         """Verify creating a project board updates Explorer immediately."""
@@ -106,15 +114,22 @@ class TestExplorerBoardRefresh(unittest.TestCase):
         self.assertIn("Character Concepts", proj_boards)
         self.assertNotIn("Character Concepts", wb_boards)
 
-    def test_2_create_workbench_board_refreshes_explorer(self):
-        """Verify creating a Workbench board updates Explorer immediately."""
+    def test_2_create_workbench_board_refreshes_explorer_and_panel(self):
+        """Verify creating a Workbench board keeps Explorer collections without board children and updates LabPanel."""
         self.lab_svc.create_board(None, "Research Shader Nodes")
 
+        # Explorer hierarchy: Workbench root contains collections, but does NOT contain individual boards underneath
+        self.assertEqual(self.explorer.lab_root.childCount(), 1)
+        col_item = self.explorer.lab_root.child(0)
+        self.assertTrue(col_item.text(0).startswith("🗂️"), "Workbench collections must use distinct collection icon 🗂️")
+        self.assertFalse(col_item.text(0).startswith("📁"), "Workbench collections must not use ordinary project folder icon 📁")
+        self.assertEqual(col_item.childCount(), 0)
         wb_boards = self._get_node_board_names(self.explorer.lab_root)
-        proj_boards = self._get_node_board_names(self.proj_lab_node)
+        self.assertEqual(wb_boards, [])
 
-        self.assertIn("Research Shader Nodes", wb_boards)
-        self.assertNotIn("Research Shader Nodes", proj_boards)
+        # LabPanel boards sidebar displays the working boards
+        panel_boards = self._get_panel_board_names()
+        self.assertIn("Research Shader Nodes", panel_boards)
 
     def test_3_rename_project_board_refreshes_explorer(self):
         """Verify renaming a project board updates Explorer immediately."""
@@ -125,14 +140,18 @@ class TestExplorerBoardRefresh(unittest.TestCase):
         self.assertIn("New Renamed Name", proj_boards)
         self.assertNotIn("Old Name", proj_boards)
 
-    def test_4_rename_workbench_board_refreshes_explorer(self):
-        """Verify renaming a Workbench board updates Explorer immediately."""
+    def test_4_rename_workbench_board_refreshes_panel(self):
+        """Verify renaming a Workbench board updates LabPanel boards list and keeps Explorer clean."""
         entry = self.lab_svc.create_board(None, "WB Old Name")
         self.lab_svc.rename_board(None, entry["id"], "WB New Renamed Name")
 
-        wb_boards = self._get_node_board_names(self.explorer.lab_root)
-        self.assertIn("WB New Renamed Name", wb_boards)
-        self.assertNotIn("WB Old Name", wb_boards)
+        panel_boards = self._get_panel_board_names()
+        self.assertIn("WB New Renamed Name", panel_boards)
+        self.assertNotIn("WB Old Name", panel_boards)
+
+        # Explorer still shows collections only
+        col_item = self.explorer.lab_root.child(0)
+        self.assertEqual(col_item.childCount(), 0)
 
     def test_5_duplicate_project_board_refreshes_explorer(self):
         """Verify duplicating a project board updates Explorer immediately."""
@@ -143,14 +162,14 @@ class TestExplorerBoardRefresh(unittest.TestCase):
         self.assertIn("Base Board", proj_boards)
         self.assertIn(dup_entry["name"], proj_boards)
 
-    def test_6_duplicate_workbench_board_refreshes_explorer(self):
-        """Verify duplicating a Workbench board updates Explorer immediately."""
+    def test_6_duplicate_workbench_board_refreshes_panel(self):
+        """Verify duplicating a Workbench board updates LabPanel boards list."""
         entry = self.lab_svc.create_board(None, "WB Base Board")
         dup_entry = self.lab_svc.duplicate_board(None, entry["id"])
 
-        wb_boards = self._get_node_board_names(self.explorer.lab_root)
-        self.assertIn("WB Base Board", wb_boards)
-        self.assertIn(dup_entry["name"], wb_boards)
+        panel_boards = self._get_panel_board_names()
+        self.assertIn("WB Base Board", panel_boards)
+        self.assertIn(dup_entry["name"], panel_boards)
 
     def test_7_delete_project_board_refreshes_explorer(self):
         """Verify deleting a project board updates Explorer immediately."""
@@ -160,27 +179,26 @@ class TestExplorerBoardRefresh(unittest.TestCase):
         self.lab_svc.delete_board(self.test_project, entry["id"])
         self.assertNotIn("Board to Delete", self._get_node_board_names(self.proj_lab_node))
 
-    def test_8_delete_workbench_board_refreshes_explorer(self):
-        """Verify deleting a Workbench board updates Explorer immediately."""
+    def test_8_delete_workbench_board_refreshes_panel(self):
+        """Verify deleting a Workbench board updates LabPanel boards list."""
         entry = self.lab_svc.create_board(None, "WB Board to Delete")
-        self.assertIn("WB Board to Delete", self._get_node_board_names(self.explorer.lab_root))
+        self.assertIn("WB Board to Delete", self._get_panel_board_names())
 
         self.lab_svc.delete_board(None, entry["id"])
-        self.assertNotIn("WB Board to Delete", self._get_node_board_names(self.explorer.lab_root))
+        self.assertNotIn("WB Board to Delete", self._get_panel_board_names())
 
     def test_9_project_workbench_isolation(self):
         """Verify project and Workbench boards never bleed into each other during lifecycle refreshes."""
         wb_entry = self.lab_svc.create_board(None, "Unique WB Board")
         proj_entry = self.lab_svc.create_board(self.test_project, "Unique Proj Board")
 
-        wb_boards = self._get_node_board_names(self.explorer.lab_root)
+        panel_boards = self._get_panel_board_names()
         proj_boards = self._get_node_board_names(self.proj_lab_node)
 
-        self.assertIn("Unique WB Board", wb_boards)
+        self.assertIn("Unique WB Board", panel_boards)
         self.assertNotIn("Unique WB Board", proj_boards)
-
         self.assertIn("Unique Proj Board", proj_boards)
-        self.assertNotIn("Unique Proj Board", wb_boards)
+        self.assertNotIn("Unique Proj Board", panel_boards)
 
     def test_10_selection_preserved_on_refresh(self):
         """Verify tree selection is preserved during targeted subtree refresh."""

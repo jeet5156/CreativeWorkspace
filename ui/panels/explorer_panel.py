@@ -189,7 +189,7 @@ class ExplorerPanel(QWidget):
             was_expanded = target_node.isExpanded()
             collections = lab_svc.list_collections(None)
             active_col_id = lab_svc.get_active_collection_id(None)
-            active_b_id = lab_svc.get_active_board_id(None)
+            selected_col_id = current_selected_item.data(0, Qt.UserRole + 21) if current_selected_item else None
 
             was_blocked = self.tree.signalsBlocked()
             self.tree.blockSignals(True)
@@ -200,34 +200,20 @@ class ExplorerPanel(QWidget):
                 for col in collections:
                     col_name = col.get("name", "Main Board")
                     col_id = col.get("id")
-                    col_item = QTreeWidgetItem([f"📁 {col_name}"])
+                    col_item = QTreeWidgetItem([f"🗂️ {col_name}"])
                     col_item.setData(0, ROLE_PROJECT, None)
                     col_item.setData(0, ROLE_SECTION, "workbench")
                     col_item.setData(0, ROLE_REL_PATH, col_name)
                     col_item.setData(0, Qt.UserRole + 21, col_id)
                     col_item.setData(0, ROLE_NODE_TYPE, "collection")
-                    col_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
-
-                    boards = lab_svc.list_boards(None, collection_id=col_id)
-                    for b in boards:
-                        b_name = b.get("name", "Board")
-                        b_id = b.get("id")
-                        child = QTreeWidgetItem([f"🎨 {b_name}"])
-                        child.setData(0, ROLE_PROJECT, None)
-                        child.setData(0, ROLE_SECTION, "workbench")
-                        child.setData(0, ROLE_REL_PATH, b_name)
-                        child.setData(0, Qt.UserRole + 20, b_id)
-                        child.setData(0, Qt.UserRole + 21, col_id)
-                        child.setData(0, ROLE_NODE_TYPE, "board")
-                        child.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
-                        col_item.addChild(child)
-
-                        if selected_board_id and b_id == selected_board_id and selected_project is None:
-                            new_selected_item = child
+                    col_item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
 
                     target_node.addChild(col_item)
-                    if col_id == active_col_id or len(collections) == 1:
-                        col_item.setExpanded(True)
+
+                    if (selected_col_id and col_id == selected_col_id and selected_project is None) or (
+                        not selected_col_id and active_col_id and col_id == active_col_id and selected_project is None
+                    ):
+                        new_selected_item = col_item
 
                 if collections:
                     target_node.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
@@ -1317,13 +1303,13 @@ class ExplorerPanel(QWidget):
         if ok and new_name.strip() and new_name.strip() != col_name:
             lab_svc = self._context.lab_service
             if lab_svc.rename_collection(None, col_id, new_name.strip()):
-                item.setText(0, f"📁 {new_name.strip()}")
+                item.setText(0, f"🗂️ {new_name.strip()}")
                 item.setData(0, ROLE_REL_PATH, new_name.strip())
                 wm = getattr(self._context, "workspace_manager", None)
                 if wm and hasattr(wm, "lab_panel") and wm.lab_panel:
                     lp = wm.lab_panel
                     if lp._current_project is None and lp._current_collection_id == col_id:
-                        lp.board_label.setText(f"— {new_name.strip()} › {lp._current_board_name} Canvas")
+                        lp.board_label.setText(f"— {new_name.strip()} › 🎨 {lp._current_board_name} Canvas")
                     lp._refresh_boards_sidebar()
 
     def _request_delete_collection(self):
@@ -1436,9 +1422,9 @@ class ExplorerPanel(QWidget):
                         if lp._current_project is None and lp._current_collection_id:
                             col = lab_svc.get_collection(None, lp._current_collection_id)
                             col_name = col["name"] if col else "Main"
-                            lp.board_label.setText(f"— {col_name} › {new_name.strip()} Canvas")
+                            lp.board_label.setText(f"— {col_name} › 🎨 {new_name.strip()} Canvas")
                         else:
-                            lp.board_label.setText(f"— {new_name.strip()} Canvas")
+                            lp.board_label.setText(f"— 🎨 {new_name.strip()} Canvas")
                     lp._refresh_boards_sidebar()
 
     def _request_duplicate_board(self):
@@ -1487,9 +1473,18 @@ class ExplorerPanel(QWidget):
             QMessageBox.No
         )
         if reply == QMessageBox.Yes:
+            wm = getattr(self._context, "workspace_manager", None)
+            if wm and hasattr(wm, "lab_panel") and wm.lab_panel:
+                lp = wm.lab_panel
+                lp_proj_same = (lp._current_project == project) if (lp._current_project and project) else (lp._current_project is None and project is None)
+                if lp_proj_same and lp._current_board_id == board_id:
+                    if hasattr(lp, "_item_save_timer") and lp._item_save_timer.isActive():
+                        lp._item_save_timer.stop()
+                    if hasattr(lp, "_save_timer") and lp._save_timer.isActive():
+                        lp._save_timer.stop()
+                    lp._current_board_id = None
             if lab_svc.delete_board(project, board_id):
                 new_active = lab_svc.get_active_board_id(project)
-                wm = getattr(self._context, "workspace_manager", None)
                 if wm and hasattr(wm, "lab_panel") and wm.lab_panel:
                     lp = wm.lab_panel
                     lp_proj_same = (lp._current_project == project) if (lp._current_project and project) else (lp._current_project is None and project is None)

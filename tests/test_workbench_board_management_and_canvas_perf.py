@@ -94,30 +94,28 @@ class TestWorkbenchBoardManagementAndCanvasPerf(unittest.TestCase):
         proj_boards = self.lab_svc.list_boards(self.project)
         self.assertNotIn("Inspiration Board", [b["name"] for b in proj_boards])
 
-    def _find_board_item(self, board_id):
-        def _search(item):
-            for i in range(item.childCount()):
-                child = item.child(i)
-                if child.data(0, Qt.UserRole + 20) == board_id:
-                    return child
-                found = _search(child)
-                if found:
-                    return found
-            return None
-        return _search(self.explorer.lab_root)
+    def test_explorer_presents_collections_without_individual_boards(self):
+        """Explorer tree displays Workbench root and collections, but does NOT display individual boards underneath."""
+        self.lab_svc.create_board(None, "Canvas A")
+        self.lab_svc.create_board(None, "Canvas B")
+        self.explorer.refresh_lab_node(None)
+
+        self.assertEqual(self.explorer.lab_root.childCount(), 1)
+        col_item = self.explorer.lab_root.child(0)
+        self.assertEqual(col_item.data(0, ROLE_NODE_TYPE), "collection")
+        self.assertTrue(col_item.text(0).startswith("🗂️"), "Workbench collections must use distinct collection icon 🗂️")
+        self.assertFalse(col_item.text(0).startswith("📁"), "Workbench collections must not use ordinary project folder icon 📁")
+        self.assertEqual(col_item.childCount(), 0, "Individual boards must not appear under collections in Explorer tree")
 
     def test_rename_board_preserves_stable_id(self):
         """Renaming a Workbench board updates display name but leaves board ID and disk file stable."""
         b_entry = self.lab_svc.create_board(None, "Initial Title")
         b_id = b_entry["id"]
 
-        self.explorer.refresh_lab_node(None)
-        target_item = self._find_board_item(b_id)
-        self.assertIsNotNone(target_item)
+        self.wm.lab_panel.show_project(None, board_id=b_id)
 
         with patch.object(QInputDialog, "getText", return_value=("Renamed Title", True)):
-            self.explorer.tree.setCurrentItem(target_item)
-            self.explorer._request_rename_board()
+            self.wm.lab_panel._on_rename_board_clicked(b_id, "Initial Title")
 
         # Check manifest
         updated = self.lab_svc.get_board_entry(None, b_id)
@@ -136,12 +134,8 @@ class TestWorkbenchBoardManagementAndCanvasPerf(unittest.TestCase):
         original = self.lab_svc.create_board(None, "Style Reference")
         orig_id = original["id"]
 
-        self.explorer.refresh_lab_node(None)
-        target_item = self._find_board_item(orig_id)
-        self.assertIsNotNone(target_item)
-
-        self.explorer.tree.setCurrentItem(target_item)
-        self.explorer._request_duplicate_board()
+        self.wm.lab_panel.show_project(None, board_id=orig_id)
+        self.wm.lab_panel._on_duplicate_board_clicked(orig_id)
 
         boards = self.lab_svc.list_boards(None)
         names = [b["name"] for b in boards]
@@ -155,13 +149,10 @@ class TestWorkbenchBoardManagementAndCanvasPerf(unittest.TestCase):
         self.assertEqual(len(manifest["boards"]), 1)
         sole_id = manifest["boards"][0]["id"]
 
-        self.explorer.refresh_lab_node(None)
-        sole_item = self._find_board_item(sole_id)
-        self.assertIsNotNone(sole_item)
-        self.explorer.tree.setCurrentItem(sole_item)
+        self.wm.lab_panel.show_project(None, board_id=sole_id)
 
         with patch.object(QMessageBox, "warning") as mock_warn:
-            self.explorer._request_delete_board()
+            self.wm.lab_panel._on_delete_board_clicked(sole_id, "Main")
             mock_warn.assert_called_once()
 
         # Board still exists
@@ -172,14 +163,10 @@ class TestWorkbenchBoardManagementAndCanvasPerf(unittest.TestCase):
         b2 = self.lab_svc.create_board(None, "Second Board")
         b2_id = b2["id"]
         self.lab_svc.set_active_board_id(None, b2_id)
-
-        self.explorer.refresh_lab_node(None)
-        target_item = self._find_board_item(b2_id)
-        self.assertIsNotNone(target_item)
+        self.wm.lab_panel.show_project(None, board_id=b2_id)
 
         with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
-            self.explorer.tree.setCurrentItem(target_item)
-            self.explorer._request_delete_board()
+            self.wm.lab_panel._on_delete_board_clicked(b2_id, "Second Board")
 
         # Active board falls back safely
         active_id = self.lab_svc.get_active_board_id(None)

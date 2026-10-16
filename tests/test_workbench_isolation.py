@@ -120,18 +120,14 @@ class TestWorkbenchIsolation(unittest.TestCase):
         explorer._on_item_expanded(explorer.lab_root)
 
         wb_children_names = [explorer.lab_root.child(i).text(0) for i in range(explorer.lab_root.childCount())]
-        self.assertTrue(all("📁" in name for name in wb_children_names))
+        self.assertTrue(all("🗂️" in name for name in wb_children_names), "Collections must use distinct collection icon 🗂️")
+        self.assertFalse(any("📁" in name for name in wb_children_names), "Collections must not use project folder icon 📁")
 
-        # Check child collections and child boards have project=None
-        wb_board_names = []
+        # Check child collections have project=None and have 0 child board nodes in Explorer (boards shown in Workbench panel)
         for i in range(explorer.lab_root.childCount()):
             col_child = explorer.lab_root.child(i)
             self.assertIsNone(col_child.data(0, ROLE_PROJECT))
-            for j in range(col_child.childCount()):
-                b_child = col_child.child(j)
-                self.assertIsNone(b_child.data(0, ROLE_PROJECT))
-                wb_board_names.append(b_child.text(0))
-        self.assertTrue(all("🎨" in name for name in wb_board_names))
+            self.assertEqual(col_child.childCount(), 0, "Individual boards must not appear under collections in Explorer tree")
 
     def test_6_explorer_tree_expansion_project_isolation(self):
         """Verify ExplorerPanel tree expansion for Cyclops Lab Boards loads ONLY Cyclops boards and NEVER global Workbench."""
